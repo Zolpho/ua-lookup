@@ -64,10 +64,30 @@ HTML = """
     .yes  { color: #7aee9a; }
     .no   { color: #e37e7e; }
     .warn2 { color: #e3b97e; }
+
+    .docs-link {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #888;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 5px 12px;
+      text-decoration: none;
+      transition: border-color .15s, color .15s;
+      white-space: nowrap;
+    }
+    .docs-link:hover {
+      border-color: #7ec8e3;
+      color: #7ec8e3;
+      text-decoration: none;
+    }
   </style>
 </head>
 <body>
-  <h2>&#128241; User-Agent Lookup &mdash; Homer DB</h2>
+  <h2 style="display:flex; align-items:center; gap:1em;">
+    &#128241; User-Agent Lookup &mdash; Homer DB
+    <a class="docs-link" href="https://wiki.nexphone.ch/display/NETVOIP/User-Agent+Lookup" target="_blank" rel="noopener">&#128214; Docs</a>
+  </h2>
   <form method="get">
     <input type="text" name="q" placeholder="MSISDN or IMSI (partial ok)"
            value="{{ query }}" autofocus>
