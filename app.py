@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, jsonify
 import psycopg2
 import psycopg2.extras
 import logging
@@ -64,24 +64,34 @@ HTML = """
     .yes  { color: #7aee9a; }
     .no   { color: #e37e7e; }
     .warn2 { color: #e3b97e; }
-
     .docs-link {
-      font-size: 0.78rem;
-      font-weight: 600;
-      color: #888;
-      border: 1px solid #444;
-      border-radius: 6px;
-      padding: 5px 12px;
-      text-decoration: none;
-      transition: border-color .15s, color .15s;
-      white-space: nowrap;
+      font-size: 0.78rem; font-weight: 600; color: #888;
+      border: 1px solid #444; border-radius: 6px; padding: 5px 12px;
+      text-decoration: none; transition: border-color .15s, color .15s; white-space: nowrap;
     }
-    .docs-link:hover {
-      border-color: #7ec8e3;
-      color: #7ec8e3;
-      text-decoration: none;
-    }
+    .docs-link:hover { border-color: #7ec8e3; color: #7ec8e3; text-decoration: none; }
+    .btn-hist       { background:#065f46; border:none; color:#fff; padding:5px 14px;
+                      font-size:13px; cursor:pointer; border-radius:4px; margin-top:1em; }
+    .btn-hist:hover { background:#047857; }
+    .hist-days      { background:#2d2d2d; border:1px solid #555; color:#fff;
+                      padding:4px 8px; font-size:13px; border-radius:4px; }
+    #hist-status    { font-size:12px; color:#888; margin-left:0.5em; }
+    #hist-box       { margin-top:1em; border-top:1px solid #444; padding-top:1em; display:none; }
+    #hist-box h3    { color:#34d399; margin:0 0 0.5em; }
+    #hist-table td.reg   { color:#7aee9a; }
+    #hist-table td.unreg { color:#e37e7e; }
   </style>
+  <script>
+    /* Defined in <head> so it is always available regardless of Jinja2 conditionals.
+       Escapes <sip:IP:port> and similar values before inserting into innerHTML,
+       preventing the browser from interpreting them as HTML tags. */
+    function esc(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+  </script>
 </head>
 <body>
   <h2 style="display:flex; align-items:center; gap:1em;">
@@ -106,23 +116,13 @@ HTML = """
       {% else %}
         <table>
           <tr>
-            <th>Timestamp</th>
-            <th>User-Agent</th>
-            <th>OS Version</th>
-            <th>From</th>
-            <th>To</th>
-            <th>Src IP (APN)</th>
-            <th>Method</th>
+            <th>Timestamp</th><th>User-Agent</th><th>OS Version</th>
+            <th>From</th><th>To</th><th>Src IP (APN)</th><th>Method</th>
           </tr>
           {% for r in results %}
           <tr>
-            <td>{{ r.create_date }}</td>
-            <td>{{ r.user_agent }}</td>
-            <td>{{ r.os_version }}</td>
-            <td>{{ r.from_user }}</td>
-            <td>{{ r.to_user }}</td>
-            <td>{{ r.src_ip }}</td>
-            <td>{{ r.method }}</td>
+            <td>{{ r.create_date }}</td><td>{{ r.user_agent }}</td><td>{{ r.os_version }}</td>
+            <td>{{ r.from_user }}</td><td>{{ r.to_user }}</td><td>{{ r.src_ip }}</td><td>{{ r.method }}</td>
           </tr>
           {% endfor %}
         </table>
@@ -134,27 +134,82 @@ HTML = """
       {% else %}
         <table>
           <tr>
-            <th>Timestamp</th>
-            <th>Status</th>
-            <th>IMSI</th>
-            <th>Src IP (APN)</th>
-            <th>User-Agent</th>
-            <th>Expires (s)</th>
-            <th>Contact</th>
+            <th>Timestamp</th><th>Status</th><th>IMSI</th>
+            <th>Src IP (APN)</th><th>User-Agent</th><th>Expires (s)</th><th>Contact</th>
           </tr>
           {% for r in reg_results %}
           <tr>
             <td>{{ r.create_date }}</td>
             <td class="{{ 'reg' if r.status == 'REGISTERED' else 'unreg' }}">{{ r.status }}</td>
-            <td>{{ r.imsi }}</td>
-            <td>{{ r.src_ip }}</td>
-            <td>{{ r.user_agent }}</td>
-            <td>{{ r.expires }}</td>
-            <td>{{ r.contact }}</td>
+            <td>{{ r.imsi }}</td><td>{{ r.src_ip }}</td><td>{{ r.user_agent }}</td>
+            <td>{{ r.expires }}</td><td>{{ r.contact }}</td>
           </tr>
           {% endfor %}
         </table>
       {% endif %}
+
+      <!-- Registration History -->
+      <div style="display:flex;align-items:center;gap:0.8em;margin-top:1em;">
+        <button class="btn-hist" onclick="loadHistory()">&#128197; Registration History</button>
+        <label style="color:#aaa;font-size:13px;">Last
+          <select class="hist-days" id="hist-days">
+            <option value="1">1 day</option>
+            <option value="3">3 days</option>
+            <option value="7" selected>7 days</option>
+            <option value="14">14 days</option>
+            <option value="30">30 days</option>
+          </select>
+        </label>
+        <span id="hist-status"></span>
+      </div>
+      <div id="hist-box">
+        <h3>&#128197; Registration History</h3>
+        <table id="hist-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th><th>Status</th><th>IMSI</th>
+              <th>Src IP (APN)</th><th>User-Agent</th><th>Expires (s)</th><th>Contact</th>
+            </tr>
+          </thead>
+          <tbody id="hist-body"></tbody>
+        </table>
+        <p id="hist-empty" style="display:none;color:#e3b97e;">No registration events found for this period.</p>
+      </div>
+      <script>
+        function loadHistory() {
+          var days   = document.getElementById('hist-days').value;
+          var status = document.getElementById('hist-status');
+          var box    = document.getElementById('hist-box');
+          var tbody  = document.getElementById('hist-body');
+          var empty  = document.getElementById('hist-empty');
+          status.textContent  = 'Loading...';
+          box.style.display   = 'none';
+          tbody.innerHTML     = '';
+          empty.style.display = 'none';
+          fetch('/history?q={{ query|urlencode }}&days=' + days)
+            .then(function(r) { return r.json(); })
+            .then(function(rows) {
+              status.textContent = '';
+              if (!rows.length) {
+                empty.style.display = 'block';
+              } else {
+                rows.forEach(function(r) {
+                  var cls = r.status === 'REGISTERED' ? 'reg' : 'unreg';
+                  tbody.innerHTML +=
+                    '<tr><td>' + esc(r.create_date) + '</td>' +
+                    '<td class="' + cls + '">' + esc(r.status)     + '</td>' +
+                    '<td>'        + esc(r.imsi)       + '</td>' +
+                    '<td>'        + esc(r.src_ip)     + '</td>' +
+                    '<td>'        + esc(r.user_agent) + '</td>' +
+                    '<td>'        + esc(r.expires)    + '</td>' +
+                    '<td>'        + esc(r.contact)    + '</td></tr>';
+                });
+              }
+              box.style.display = 'block';
+            })
+            .catch(function(e) { status.textContent = 'Error: ' + e; });
+        }
+      </script>
 
     {% endif %}
   {% endif %}
@@ -177,10 +232,10 @@ HTML = """
       It changes per PDN session. No UA result = subscriber likely on 2G/3G or VoLTE not enabled.
     </p>
   </div>
-
 </body>
 </html>
 """
+
 
 def get_db():
     conn = psycopg2.connect(**DB_CONFIG)
@@ -188,6 +243,7 @@ def get_db():
     cur.execute("SET statement_timeout = '15s'")
     cur.close()
     return conn
+
 
 def lookup(pattern: str):
     pattern = pattern.lstrip("+")
@@ -292,6 +348,53 @@ def lookup_registration(pattern: str):
     return results
 
 
+def lookup_registration_history(pattern: str, days: int):
+    pattern = pattern.lstrip("+")
+    is_imsi = bool(re.match(r'^228\d{12}$', pattern))
+
+    if is_imsi:
+        reg_pattern = pattern
+    else:
+        # Reuse lookup_registration() for IMSI resolution — uses the fast
+        # 2-hour window, avoids slow raw ILIKE scan over large date ranges
+        existing = lookup_registration(pattern)
+        if not existing:
+            return []
+        reg_pattern = existing[0]["imsi"]
+
+    reg_sql = """
+        SELECT
+            create_date,
+            protocol_header->>'srcIp'                AS src_ip,
+            data_header->>'from_user'                 AS imsi,
+            data_header->>'user_agent'                AS user_agent,
+            substring(raw FROM 'Expires: ([0-9]+)')   AS expires,
+            substring(raw FROM 'Contact: ([^\r\n]+)') AS contact
+        FROM hep_proto_1_registration
+        WHERE create_date > NOW() - %(interval)s::interval
+          AND data_header->>'from_user' = %(imsi)s
+        ORDER BY create_date DESC
+    """
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(reg_sql, {"imsi": reg_pattern, "interval": f"{days} days"})
+            rows = cur.fetchall()
+
+    results = []
+    for row in rows:
+        expires = (row["expires"] or "0").strip()
+        results.append({
+            "create_date": str(row["create_date"]),
+            "imsi":        row["imsi"] or "",
+            "src_ip":      row["src_ip"] or "",
+            "user_agent":  row["user_agent"] or "-",
+            "expires":     expires,
+            "status":      "REGISTERED" if expires != "0" else "UNREGISTERED",
+            "contact":     row["contact"] or "-",
+        })
+    return results
+
+
 @app.route("/", methods=["GET"])
 def index():
     query = request.args.get("q", "").strip()
@@ -312,6 +415,22 @@ def index():
 
     return render_template_string(HTML, query=query, results=results,
                                   reg_results=reg_results, error=error)
+
+
+@app.route("/history", methods=["GET"])
+def history():
+    query = request.args.get("q", "").strip()
+    days  = max(1, min(int(request.args.get("days", 7)), 30))
+    if not query:
+        return jsonify([])
+    try:
+        rows = lookup_registration_history(query, days)
+        log.info(f"History: {query} last {days}d -> {len(rows)} event(s)")
+    except Exception as e:
+        log.exception("History DB error")
+        return jsonify({"error": str(e)}), 500
+    return jsonify(rows)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
