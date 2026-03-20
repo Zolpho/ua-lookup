@@ -37,14 +37,10 @@ DB_CONFIG = {
 GOOGLE_API_KEY = _require_env("GOOGLE_API_KEY")
 
 UA_EXCLUDE   = re.compile(r"YATE|OpenSIPS|dispatcher|nx-sbc-ocs|NexSBC|VoLTE/WFC", re.IGNORECASE)
-_google_cache: dict = {}   # (mcc, mnc, tac, ecgi) -> (lat, lon) | None
+_google_cache: dict = {}
 
 
 def _decode_plmn_ecgi(cell_hex: str):
-    """Decode utran-cell-id-3gpp hex.
-    Layout: PLMN(3) + TAC(2) + ECI-28bit(4, byte4 shared with TAC low byte).
-    Invalid BCD nibbles (>9) are zeroed (seen on some Salt/Samsung devices).
-    """
     if len(cell_hex) < 16:
         return None
     b      = bytes.fromhex(cell_hex[:16])
@@ -107,6 +103,28 @@ def resolve_cell(raw_header: str) -> dict:
     return {"label": label, "url": url}
 
 
+def _fmt_gap(seconds: int) -> str:
+    if seconds < 60:   return f"{seconds}s"
+    if seconds < 3600: return f"{seconds // 60}m"
+    h = seconds // 3600;  m = (seconds % 3600) // 60
+    return f"{h}h {m}m" if m else f"{h}h"
+
+
+def _add_gaps(rows: list) -> list:
+    """Rows sorted DESC (newest first).
+    Pass 1: compute gaps while all create_dates are still datetime objects.
+    Pass 2: stringify create_date (must be separate — mixing str and datetime breaks subtraction).
+    """
+    for i, row in enumerate(rows):
+        if i > 0:
+            delta      = rows[i-1]["create_date"] - row["create_date"]
+            secs       = int(delta.total_seconds())
+            row["gap"] = _fmt_gap(secs) if secs >= 0 else ""
+    for row in rows:
+        row["create_date"] = str(row["create_date"])
+    return rows
+
+
 HTML = """<!DOCTYPE html>
 <html><head>
   <meta charset="utf-8"><title>UA Lookup - Homer DB</title>
@@ -119,7 +137,10 @@ HTML = """<!DOCTYPE html>
     th{background:#333;color:#7ec8e3;padding:8px 12px;text-align:left;white-space:nowrap}
     td{padding:7px 12px;border-bottom:1px solid #333}
     tr:hover td{background:#2a2a2a}
+    tr.dereg td{opacity:.45}
+    tr.dereg:hover td{opacity:.7}
     .reg{color:#7aee9a}.unreg{color:#e37e7e}.warn{color:#e3b97e;margin-top:1em}
+    .gap{color:#888;font-size:.82em;white-space:nowrap}
     .info{color:#888;font-size:12px;margin-top:.5em}
     .infobox{margin-top:2em;border:1px solid #444;border-left:4px solid #7ec8e3;background:#252525;padding:1em 1.5em;font-size:13px;color:#aaa}
     .infobox h3{color:#7ec8e3;margin:0 0 .7em;font-size:14px}
@@ -135,8 +156,6 @@ HTML = """<!DOCTYPE html>
     #hist-status{font-size:12px;color:#888;margin-left:.5em}
     #hist-box{margin-top:1em;border-top:1px solid #444;padding-top:1em;display:none}
     #hist-box h3{color:#34d399;margin:0 0 .5em}
-    #hist-table td.reg{color:#7aee9a}
-    #hist-table td.unreg{color:#e37e7e}
     .cell-info{color:#a78bfa;font-size:.85em}
     .cell-info a{color:#a78bfa;text-decoration:none}
     .cell-info a:hover{color:#c4b5fd;text-decoration:underline}
@@ -210,7 +229,7 @@ HTML = """<!DOCTYPE html>
       <h3>&#128197; Registration History</h3>
       <table id="hist-table">
         <thead><tr>
-          <th>Timestamp</th><th>Status</th><th>IMSI</th><th>Src IP (APN)</th>
+          <th>Timestamp</th><th>Gap &#8593;</th><th>Status</th><th>IMSI</th><th>Src IP (APN)</th>
           <th>User-Agent</th><th>Expires (s)</th><th>Contact</th><th>Cell</th>
         </tr></thead>
         <tbody id="hist-body"></tbody>
@@ -232,10 +251,14 @@ HTML = """<!DOCTYPE html>
             status.textContent='';
             if(!rows.length){empty.style.display='block';}
             else{rows.forEach(function(r){
-              var cls=r.status==='REGISTERED'?'reg':'unreg';
+              var isReg=r.status==='REGISTERED';
+              var cls=isReg?'reg':'unreg';
+              var rowCls=isReg?'':' class="dereg"';
+              var gapHtml=r.gap?'<span class="gap">'+esc(r.gap)+'</span>':'';
               tbody.innerHTML+=
-                '<tr>'+
+                '<tr'+rowCls+'>'+
                 '<td>'+esc(r.create_date)+'</td>'+
+                '<td>'+gapHtml+'</td>'+
                 '<td class="'+cls+'">'+esc(r.status)+'</td>'+
                 '<td>'+esc(r.imsi)+'</td>'+
                 '<td>'+esc(r.src_ip)+'</td>'+
@@ -272,6 +295,7 @@ def get_db():
     conn = psycopg2.connect(**DB_CONFIG)
     cur  = conn.cursor()
     cur.execute("SET statement_timeout = '15s'")
+    cur.execute("SET TIME ZONE 'Europe/Zurich'")
     cur.close()
     return conn
 
@@ -316,11 +340,11 @@ def lookup(pattern: str):
     return sorted(seen.values(), key=lambda x: str(x["create_date"]), reverse=True)
 
 
-def _reg_row_to_dict(row, create_date_as_str=False):
+def _reg_row_to_dict(row):
     expires = (row["expires"] or "0").strip()
     cell    = resolve_cell(row["access_info"] or "")
     return {
-        "create_date": str(row["create_date"]) if create_date_as_str else row["create_date"],
+        "create_date": row["create_date"],   # kept as datetime; caller stringifies
         "imsi":        row["imsi"]       or "",
         "src_ip":      row["src_ip"]     or "",
         "user_agent":  row["user_agent"] or "-",
@@ -329,6 +353,7 @@ def _reg_row_to_dict(row, create_date_as_str=False):
         "contact":     row["contact"]    or "-",
         "cell_label":  cell["label"],
         "cell_url":    cell["url"],
+        "gap":         "",
     }
 
 
@@ -371,7 +396,10 @@ def lookup_registration(pattern: str):
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(REG_SELECT + "LIMIT 1",
                         {"imsi": reg_pattern, "interval": "7 days"})
-            return [_reg_row_to_dict(r) for r in cur.fetchall()]
+            rows = [_reg_row_to_dict(r) for r in cur.fetchall()]
+    for r in rows:
+        r["create_date"] = str(r["create_date"])
+    return rows
 
 
 def lookup_registration_history(pattern: str, days: int):
@@ -388,7 +416,8 @@ def lookup_registration_history(pattern: str, days: int):
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(REG_SELECT,
                         {"imsi": reg_pattern, "interval": f"{days} days"})
-            return [_reg_row_to_dict(r, create_date_as_str=True) for r in cur.fetchall()]
+            rows = [_reg_row_to_dict(r) for r in cur.fetchall()]
+    return _add_gaps(rows)   # two-pass: gaps first (datetime), then stringify
 
 
 @app.route("/", methods=["GET"])
