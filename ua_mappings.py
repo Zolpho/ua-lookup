@@ -48,7 +48,7 @@ SAMSUNG_MODELS = {
 #   E = +3
 #   F = +4  (extrapolated)
 SAMSUNG_ANDROID_OFFSET = {
-    "A": 0, "B": 0, "C": 1, "D": 2, "E": 3, "F": 4, "G": 5,
+    "A": 0, "B": 0, "C": 1, "D": 2, "E": 3, "F": 3, "G": 5,
 }
 
 # Xiaomi HyperOS firmware first letter of 7-letter suffix → Android version
@@ -159,6 +159,7 @@ if __name__ == "__main__":
         ("Google_Pixel8_Android 16_BP4A.260205.001",    "Pixel8 \u2014 Android 16"),
         ("Fairphone_Fairphone 6_FP6.QREL.15.151.0",    "Fairphone 6 \u2014 Android 15"),
         ("iOS/26.3 iPhone",                              "iOS 26"),
+        ("SM-F731B-F731BXXS5FZA1 Samsung IMS 6.0", "Galaxy Z Flip5 \u2014 Android 16"),
     ]
     all_ok = True
     for ua, expected in tests:

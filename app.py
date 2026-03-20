@@ -9,7 +9,7 @@ import os
 from ua_mappings import get_android_version
 
 
-def _require_env(key: str) -> str:
+def _require_env(key):
     val = os.environ.get(key)
     if not val:
         raise RuntimeError(f"Missing required env var: {key}  (set it in /opt/ua-lookup/config.env)")
@@ -37,10 +37,10 @@ DB_CONFIG = {
 GOOGLE_API_KEY = _require_env("GOOGLE_API_KEY")
 
 UA_EXCLUDE   = re.compile(r"YATE|OpenSIPS|dispatcher|nx-sbc-ocs|NexSBC|VoLTE/WFC", re.IGNORECASE)
-_google_cache: dict = {}
+_google_cache = {}
 
 
-def _decode_plmn_ecgi(cell_hex: str):
+def _decode_plmn_ecgi(cell_hex):
     if len(cell_hex) < 16:
         return None
     b      = bytes.fromhex(cell_hex[:16])
@@ -84,7 +84,7 @@ def _google_lookup(mcc, mnc, tac, ecgi):
     return result
 
 
-def resolve_cell(raw_header: str) -> dict:
+def resolve_cell(raw_header):
     if not raw_header:
         return {"label": "-", "url": ""}
     at       = raw_header.split(";")[0].strip()
@@ -103,23 +103,73 @@ def resolve_cell(raw_header: str) -> dict:
     return {"label": label, "url": url}
 
 
-def _fmt_gap(seconds: int) -> str:
+def _fmt_gap(seconds):
     if seconds < 60:   return f"{seconds}s"
     if seconds < 3600: return f"{seconds // 60}m"
     h = seconds // 3600;  m = (seconds % 3600) // 60
     return f"{h}h {m}m" if m else f"{h}h"
 
 
-def _add_gaps(rows: list) -> list:
-    """Rows sorted DESC (newest first).
-    Pass 1: compute gaps while all create_dates are still datetime objects.
-    Pass 2: stringify create_date (must be separate — mixing str and datetime breaks subtraction).
+def _classify_event(row, prev, backward_secs):
+    """Return (event_text, css_class) for a REGISTERED row.
+    prev  : the row that happened just before this one (next index in DESC list), or None.
+    backward_secs : seconds from prev to this row.
+    Compatible with Python 3.8+.
     """
+    if prev is None:
+        return "❓ First in window", "ev-unknown"
+
+    badges = []
+
+    if prev["status"] == "UNREGISTERED":
+        if backward_secs < 90:
+            badges.append(("🔄 Reboot", "ev-reboot"))
+        else:
+            badges.append(("✈️ Airplane / Off", "ev-airplane"))
+    else:
+        try:
+            expires_val = int(prev["expires"])
+        except (ValueError, TypeError):
+            expires_val = 0
+        if expires_val > 0 and abs(backward_secs - expires_val) / expires_val <= 0.25:
+            badges.append(("🔁 Periodic", "ev-periodic"))
+        elif backward_secs > 300:
+            badges.append(("📵 Coverage loss", "ev-coverage"))
+
+    if prev.get("user_agent") and prev["user_agent"] != "-"             and row["user_agent"] != prev["user_agent"]:
+        badges.append(("🆕 UA changed", "ev-ua"))
+
+    pc = prev.get("cell_label") or "-"
+    tc = row.get("cell_label") or "-"
+    if pc not in ("-", "") and tc not in ("-", "") and pc != tc:
+        badges.append(("📍 Cell changed", "ev-cell"))
+
+    if not badges:
+        return "", ""
+    return " · ".join(b[0] for b in badges), badges[0][1]
+
+
+def _add_gaps_and_classify(rows):
+    """Two-pass processing:
+    Pass 1 (all datetimes intact): compute gaps + classify events.
+    Pass 2: stringify create_date.
+    """
+    n = len(rows)
     for i, row in enumerate(rows):
         if i > 0:
-            delta      = rows[i-1]["create_date"] - row["create_date"]
-            secs       = int(delta.total_seconds())
-            row["gap"] = _fmt_gap(secs) if secs >= 0 else ""
+            fwd_secs   = int((rows[i-1]["create_date"] - row["create_date"]).total_seconds())
+            row["gap"] = _fmt_gap(fwd_secs) if fwd_secs >= 0 else ""
+        else:
+            row["gap"] = ""
+
+        if row["status"] == "REGISTERED":
+            prev     = rows[i+1] if i+1 < n else None
+            bwd_secs = int((row["create_date"] - prev["create_date"]).total_seconds())                        if prev is not None else 0
+            row["event"], row["event_class"] = _classify_event(row, prev, bwd_secs)
+        else:
+            row["event"]       = ""
+            row["event_class"] = ""
+
     for row in rows:
         row["create_date"] = str(row["create_date"])
     return rows
@@ -129,24 +179,35 @@ HTML = """<!DOCTYPE html>
 <html><head>
   <meta charset="utf-8"><title>UA Lookup - Homer DB</title>
   <style>
-    body{font-family:monospace;background:#1e1e1e;color:#ddd;padding:2em;max-width:1600px}
+    body{font-family:monospace;background:#1e1e1e;color:#ddd;padding:2em;max-width:1800px}
     h2,h3{color:#7ec8e3}
     input[type=text]{background:#2d2d2d;border:1px solid #555;color:#fff;padding:6px 10px;width:320px;font-size:14px}
     input[type=submit]{background:#7ec8e3;border:none;padding:6px 16px;font-size:14px;cursor:pointer;color:#000}
     table{border-collapse:collapse;margin-top:1em;width:100%}
     th{background:#333;color:#7ec8e3;padding:8px 12px;text-align:left;white-space:nowrap}
-    td{padding:7px 12px;border-bottom:1px solid #333}
+    td{padding:7px 12px;border-bottom:1px solid #333;vertical-align:top}
     tr:hover td{background:#2a2a2a}
-    tr.dereg td{opacity:.45}
-    tr.dereg:hover td{opacity:.7}
+    tr.dereg td{opacity:.4}
+    tr.dereg:hover td{opacity:.75}
+    tr.is-periodic td{opacity:.55}
+    tr.is-periodic:hover td{opacity:.85}
+    tr.hide-periodic{display:none}
     .reg{color:#7aee9a}.unreg{color:#e37e7e}.warn{color:#e3b97e;margin-top:1em}
     .gap{color:#888;font-size:.82em;white-space:nowrap}
+    .reason{color:#888;font-size:.78em;display:block;margin-top:2px}
+    .ev-reboot{color:#60a5fa}
+    .ev-airplane{color:#a78bfa}
+    .ev-coverage{color:#f87171}
+    .ev-periodic{color:#6b7280}
+    .ev-ua{color:#34d399}
+    .ev-cell{color:#fbbf24}
+    .ev-unknown{color:#9ca3af}
     .info{color:#888;font-size:12px;margin-top:.5em}
     .infobox{margin-top:2em;border:1px solid #444;border-left:4px solid #7ec8e3;background:#252525;padding:1em 1.5em;font-size:13px;color:#aaa}
     .infobox h3{color:#7ec8e3;margin:0 0 .7em;font-size:14px}
     .infobox table{margin-top:.5em;font-size:12px}
     .infobox th{background:#2d2d2d;color:#7ec8e3;padding:5px 10px}
-    .infobox td{padding:5px 10px;border-bottom:1px solid #333}
+    .infobox td{padding:5px 10px;border-bottom:1px solid #333;opacity:1}
     .yes{color:#7aee9a}.no{color:#e37e7e}.warn2{color:#e3b97e}
     .docs-link{font-size:.78rem;font-weight:600;color:#888;border:1px solid #444;border-radius:6px;padding:5px 12px;text-decoration:none;white-space:nowrap}
     .docs-link:hover{border-color:#7ec8e3;color:#7ec8e3}
@@ -156,6 +217,9 @@ HTML = """<!DOCTYPE html>
     #hist-status{font-size:12px;color:#888;margin-left:.5em}
     #hist-box{margin-top:1em;border-top:1px solid #444;padding-top:1em;display:none}
     #hist-box h3{color:#34d399;margin:0 0 .5em}
+    .toggle-bar{display:flex;align-items:center;gap:1.2em;margin:.7em 0;font-size:13px;color:#aaa}
+    .toggle-bar label{display:flex;align-items:center;gap:.4em;cursor:pointer}
+    .toggle-bar input[type=checkbox]{accent-color:#7ec8e3;width:14px;height:14px;cursor:pointer}
     .cell-info{color:#a78bfa;font-size:.85em}
     .cell-info a{color:#a78bfa;text-decoration:none}
     .cell-info a:hover{color:#c4b5fd;text-decoration:underline}
@@ -165,6 +229,13 @@ HTML = """<!DOCTYPE html>
     function cellHtml(label,url){
       if(!url) return esc(label);
       return '<a href="'+esc(url)+'" target="_blank" rel="noopener">&#128205; '+esc(label)+'</a>';
+    }
+    function togglePeriodic(cb){
+      document.querySelectorAll('#hist-body tr.is-periodic').forEach(function(tr){
+        tr.classList.toggle('hide-periodic', cb.checked);
+      });
+      var count=document.querySelectorAll('#hist-body tr.is-periodic').length;
+      document.getElementById('periodic-count').textContent=cb.checked&&count?'('+count+' hidden)':'';
     }
   </script>
 </head><body>
@@ -227,10 +298,15 @@ HTML = """<!DOCTYPE html>
     </div>
     <div id="hist-box">
       <h3>&#128197; Registration History</h3>
+      <div class="toggle-bar">
+        <label><input type="checkbox" id="hide-periodic" onchange="togglePeriodic(this)">
+          Hide periodic re-registrations <span id="periodic-count" style="color:#6b7280"></span>
+        </label>
+      </div>
       <table id="hist-table">
         <thead><tr>
-          <th>Timestamp</th><th>Gap &#8593;</th><th>Status</th><th>IMSI</th><th>Src IP (APN)</th>
-          <th>User-Agent</th><th>Expires (s)</th><th>Contact</th><th>Cell</th>
+          <th>Timestamp</th><th>Gap &#8593;</th><th>Event</th><th>Status</th><th>IMSI</th>
+          <th>Src IP (APN)</th><th>User-Agent</th><th>Expires (s)</th><th>Contact</th><th>Cell</th>
         </tr></thead>
         <tbody id="hist-body"></tbody>
       </table>
@@ -243,6 +319,7 @@ HTML = """<!DOCTYPE html>
         var box=document.getElementById('hist-box');
         var tbody=document.getElementById('hist-body');
         var empty=document.getElementById('hist-empty');
+        var hideCb=document.getElementById('hide-periodic');
         status.textContent='Loading...';
         box.style.display='none'; tbody.innerHTML=''; empty.style.display='none';
         fetch('/history?q={{ query|urlencode }}&days='+days)
@@ -252,14 +329,21 @@ HTML = """<!DOCTYPE html>
             if(!rows.length){empty.style.display='block';}
             else{rows.forEach(function(r){
               var isReg=r.status==='REGISTERED';
-              var cls=isReg?'reg':'unreg';
-              var rowCls=isReg?'':' class="dereg"';
+              var statusCls=isReg?'reg':'unreg';
+              var cls=[];
+              if(!isReg) cls.push('dereg');
+              if(r.event_class==='ev-periodic') cls.push('is-periodic');
+              if(hideCb.checked && r.event_class==='ev-periodic') cls.push('hide-periodic');
+              var rowCls=cls.length?' class="'+cls.join(' ')+'"':'';
               var gapHtml=r.gap?'<span class="gap">'+esc(r.gap)+'</span>':'';
+              var evHtml=r.event?'<span class="'+esc(r.event_class)+'">'+esc(r.event)+'</span>':'';
+              if(!isReg && r.reason) evHtml+='<span class="reason">'+esc(r.reason)+'</span>';
               tbody.innerHTML+=
                 '<tr'+rowCls+'>'+
                 '<td>'+esc(r.create_date)+'</td>'+
                 '<td>'+gapHtml+'</td>'+
-                '<td class="'+cls+'">'+esc(r.status)+'</td>'+
+                '<td>'+evHtml+'</td>'+
+                '<td class="'+statusCls+'">'+esc(r.status)+'</td>'+
                 '<td>'+esc(r.imsi)+'</td>'+
                 '<td>'+esc(r.src_ip)+'</td>'+
                 '<td>'+esc(r.user_agent)+'</td>'+
@@ -267,7 +351,10 @@ HTML = """<!DOCTYPE html>
                 '<td>'+esc(r.contact)+'</td>'+
                 '<td class="cell-info">'+cellHtml(r.cell_label,r.cell_url)+'</td>'+
                 '</tr>';
-            });}
+            });
+            var pc=document.querySelectorAll('#hist-body tr.is-periodic').length;
+            document.getElementById('periodic-count').textContent=
+              hideCb.checked&&pc?'('+pc+' hidden)':'';}
             box.style.display='block';
           })
           .catch(function(e){status.textContent='Error: '+e;});
@@ -277,6 +364,24 @@ HTML = """<!DOCTYPE html>
   {% endif %}{% endif %}
 
   <div class="infobox">
+    <h3>&#9889; Registration History &mdash; Event column legend</h3>
+    <table>
+      <tr><th>Badge</th><th>Meaning</th><th>How detected</th></tr>
+      <tr><td>🔄 Reboot</td><td>Device rebooted</td><td>UNREGISTERED preceded this reg, gap &lt; 90s</td></tr>
+      <tr><td>✈️ Airplane / Off</td><td>Airplane mode or powered off intentionally</td><td>UNREGISTERED preceded this reg, gap &ge; 90s</td></tr>
+      <tr><td>📵 Coverage loss</td><td>Device lost signal or crashed without deregistering</td><td>Previous event was REGISTERED, gap &gt; 5 min, no Expires:0</td></tr>
+      <tr><td>🔁 Periodic</td><td>Normal keep-alive re-registration</td><td>Gap &asymp; Expires value (&plusmn;25%), previous event was REGISTERED</td></tr>
+      <tr><td>🆕 UA changed</td><td>User-Agent changed since last event</td><td>Different UA string vs previous row (OS update, new device, SIM swap)</td></tr>
+      <tr><td>📍 Cell changed</td><td>Device moved to a different antenna</td><td>Different cell ID vs previous row</td></tr>
+      <tr><td>❓ First in window</td><td>Oldest event in selected time window</td><td>No previous row to compare against &mdash; extend the window for more context</td></tr>
+    </table>
+    <p style="margin-top:.8em;color:#666;font-size:.85em;">
+      Multiple badges can appear on one row (e.g. <span class="ev-airplane">&#9992;&#65039; Airplane / Off</span> &middot; <span class="ev-ua">&#128;&#141; UA changed</span>).
+      UNREGISTERED rows are dimmed &mdash; any SIP <code>Reason:</code> header is shown beneath them.
+    </p>
+  </div>
+
+  <div class="infobox" style="margin-top:1em;">
     <h3>&#8505; How User-Agent detection works</h3>
     <p>UA visible only when device originates SIP directly into IMS core (VoLTE/WiFi Calling). CS calls via MGCF show YATE &mdash; filtered out.</p>
     <table>
@@ -300,7 +405,7 @@ def get_db():
     return conn
 
 
-def lookup(pattern: str):
+def lookup(pattern):
     pattern = pattern.lstrip("+")
     sql = """
         SELECT create_date,
@@ -344,16 +449,19 @@ def _reg_row_to_dict(row):
     expires = (row["expires"] or "0").strip()
     cell    = resolve_cell(row["access_info"] or "")
     return {
-        "create_date": row["create_date"],   # kept as datetime; caller stringifies
-        "imsi":        row["imsi"]       or "",
-        "src_ip":      row["src_ip"]     or "",
-        "user_agent":  row["user_agent"] or "-",
-        "expires":     expires,
-        "status":      "REGISTERED" if expires != "0" else "UNREGISTERED",
-        "contact":     row["contact"]    or "-",
-        "cell_label":  cell["label"],
-        "cell_url":    cell["url"],
-        "gap":         "",
+        "create_date":  row["create_date"],
+        "imsi":         row["imsi"]        or "",
+        "src_ip":       row["src_ip"]      or "",
+        "user_agent":   row["user_agent"]  or "-",
+        "expires":      expires,
+        "status":       "REGISTERED" if expires != "0" else "UNREGISTERED",
+        "contact":      row["contact"]     or "-",
+        "reason":       (row["reason"]     or "").strip(),
+        "cell_label":   cell["label"],
+        "cell_url":     cell["url"],
+        "gap":          "",
+        "event":        "",
+        "event_class":  "",
     }
 
 
@@ -364,7 +472,8 @@ REG_SELECT = """
            data_header->>'user_agent'                                  AS user_agent,
            substring(raw FROM 'Expires: ([0-9]+)')                     AS expires,
            substring(raw FROM 'Contact: ([^\r\n]+)')                 AS contact,
-           substring(raw FROM 'P-Access-Network-Info: ([^\r\n]+)')   AS access_info
+           substring(raw FROM 'P-Access-Network-Info: ([^\r\n]+)')   AS access_info,
+           substring(raw FROM 'Reason: ([^\r\n]+)')                  AS reason
     FROM hep_proto_1_registration
     WHERE create_date > NOW() - %(interval)s::interval
       AND data_header->>'from_user' = %(imsi)s
@@ -373,7 +482,7 @@ REG_SELECT = """
 """
 
 
-def lookup_registration(pattern: str):
+def lookup_registration(pattern):
     pattern = pattern.lstrip("+")
     is_imsi = bool(re.fullmatch(r"228[0-9]{12}", pattern))
     if is_imsi:
@@ -402,7 +511,7 @@ def lookup_registration(pattern: str):
     return rows
 
 
-def lookup_registration_history(pattern: str, days: int):
+def lookup_registration_history(pattern, days):
     pattern = pattern.lstrip("+")
     is_imsi = bool(re.fullmatch(r"228[0-9]{12}", pattern))
     if is_imsi:
@@ -417,7 +526,7 @@ def lookup_registration_history(pattern: str, days: int):
             cur.execute(REG_SELECT,
                         {"imsi": reg_pattern, "interval": f"{days} days"})
             rows = [_reg_row_to_dict(r) for r in cur.fetchall()]
-    return _add_gaps(rows)   # two-pass: gaps first (datetime), then stringify
+    return _add_gaps_and_classify(rows)
 
 
 @app.route("/", methods=["GET"])
