@@ -5,6 +5,7 @@ import logging
 import re
 import json as _json
 import urllib.request
+import subprocess
 import os
 from ua_mappings import get_android_version
 
@@ -36,8 +37,128 @@ DB_CONFIG = {
 }
 GOOGLE_API_KEY = _require_env("GOOGLE_API_KEY")
 
+# UCN SQLite fallback — add to config.env:
+#   UCN_NODES=10.70.1.12,10.70.1.22,10.70.1.112,10.70.1.113,10.70.1.16,10.70.1.26,10.70.1.18,10.70.1.115
+#   UCN_USER=root
+#   UCN_DB=/etc/yate/ucn/ucn.db
+UCN_NODES = [n.strip() for n in os.environ.get("UCN_NODES", "").split(",") if n.strip()]
+UCN_USER  = os.environ.get("UCN_USER", "root")
+UCN_DB    = os.environ.get("UCN_DB", "/etc/yate/ucn/ucn.db")
+UCN_HOSTNAMES = {
+    pair.split(":", 1)[0].strip(): pair.split(":", 1)[1].strip()
+    for pair in os.environ.get("UCN_HOSTNAMES", "").split(",")
+    if ":" in pair
+}
+
 UA_EXCLUDE   = re.compile(r"YATE|OpenSIPS|dispatcher|nx-sbc-ocs|NexSBC|VoLTE/WFC", re.IGNORECASE)
 _google_cache = {}
+
+# Remote Python sent to stdin over SSH.
+# Detects optional columns at runtime — works across all 8 UCN schema variants.
+_UCN_SCRIPT = (
+    "import sqlite3,json,sys\n"
+    "DB=sys.argv[1]; q=sys.argv[2]\n"
+    "try:\n"
+    "    con=sqlite3.connect(\"file:\"+DB+\"?mode=ro\",uri=True)\n"
+    "    con.row_factory=sqlite3.Row\n"
+    "    existing=set(c[1] for c in con.execute(\"PRAGMA table_info(cs_regs)\").fetchall())\n"
+    "    def col(name,expr=None):\n"
+    "        return (expr or (\"r.\"+name)) if name in existing else (\"NULL AS \"+name)\n"
+    "    sql=\"\"\"\n"
+    "        SELECT c.imsi, c.msisdn,\n"
+    "               COALESCE(c.hlr,c.diam_host,c.diam_realm) AS hss,\n"
+    "               COALESCE(r.temploc,r.location)            AS pcscf,\n"
+    "               r.imei, r.cell_split, r.cell_type,\n"
+    "               r.rip, r.rport_s,\n"
+    "               DATETIME(r.expires)                       AS expires,\n"
+    "               r.reg_interval,\n"
+    "               {time_created},\n"
+    "               {time_updated},\n"
+    "               {type}\n"
+    "        FROM cs_core c\n"
+    "        LEFT JOIN cs_regs r ON r.imsi=c.imsi\n"
+    "        WHERE c.msisdn=? OR c.imsi LIKE ?||'@%' OR c.imsi_detected=?\n"
+    "        LIMIT 1\"\"\"\n"
+    "    row=con.execute(sql.format(\n"
+    "        time_created=col('time_created',\"DATETIME(r.time_created,'unixepoch') AS time_created\"),\n"
+    "        time_updated=col('time_updated',\"DATETIME(r.time_updated,'unixepoch') AS time_updated\"),\n"
+    "        type=col('type')\n"
+    "    ), (q,q,q)).fetchone()\n"
+    "    print(json.dumps(dict(row)) if row else json.dumps({\"error\":\"not found\"}))\n"
+    "    con.close()\n"
+    "except Exception as e:\n"
+    "    print(json.dumps({\"error\":str(e)}))\n"
+)
+
+
+
+def _resolve_cell_from_vlr(cell_split, cell_type):
+    """Parse UCN cell_split ('MCC/MNC/TAC_hex/ECI_dec') and attempt Google lookup."""
+    if not cell_split:
+        return {"label": "-", "url": ""}
+    parts = cell_split.split("/")
+    if len(parts) != 4:
+        return {"label": cell_split, "url": ""}
+    try:
+        mcc  = int(parts[0])
+        mnc  = int(parts[1])
+        tac  = int(parts[2], 16)
+        ecgi = int(parts[3], 16)
+        enb  = ecgi >> 8
+        cid  = ecgi & 0xFF
+        label  = f"{cell_type or 'e-utran'} eNB:{enb} cell:{cid}"
+        coords = _google_lookup(mcc, mnc, tac, ecgi)
+        url = (f"https://www.openstreetmap.org/?mlat={coords[0]}&mlon={coords[1]}&zoom=16"
+               if coords else "")
+        return {"label": label, "url": url}
+    except Exception:
+        return {"label": cell_split, "url": ""}
+
+
+def vlr_lookup(query):
+    """Query UCN nodes in order, return first SQLite hit or None.
+    Called only when Homer has no registration data for the subscriber.
+    """
+    if not UCN_NODES:
+        return None
+    q = query.lstrip("+")
+    for node in UCN_NODES:
+        try:
+            r = subprocess.run(
+                ["ssh",
+                 "-o", "ConnectTimeout=4",
+                 "-o", "StrictHostKeyChecking=no",
+                 "-o", "BatchMode=yes",
+                 f"{UCN_USER}@{node}",
+                 f"python3 - {UCN_DB} {q}"],
+                input=_UCN_SCRIPT,
+                capture_output=True, text=True, timeout=8
+            )
+            json_lines = [l for l in r.stdout.splitlines() if l.strip().startswith("{")]
+            if not json_lines:
+                continue
+            data = _json.loads(json_lines[-1])
+            if "error" in data:
+                log.debug("UCN %s: %s (q=%s)", node, data["error"], q)
+                continue
+            # Normalise IMSI — strip @domain suffix
+            if data.get("imsi") and "@" in str(data["imsi"]):
+                data["imsi"] = data["imsi"].split("@")[0]
+            # pcscf: strip sip/sip:user@ prefix, keep IP:port
+            pcscf = data.get("pcscf") or ""
+            data["pcscf"] = re.sub(r"^sip/sip:[^@]+@", "", pcscf)
+            # Cell resolution via Google
+            cell = _resolve_cell_from_vlr(data.get("cell_split"), data.get("cell_type"))
+            data["cell_label"] = cell["label"]
+            data["cell_url"]   = cell["url"]
+            hostname = UCN_HOSTNAMES.get(node, node)
+            data["ucn_node"]       = node
+            data["ucn_node_label"] = f"{hostname} ({node})"
+            log.info("UCN hit for %s on %s IMEI=%s", q, node, data.get("imei"))
+            return data
+        except Exception as exc:
+            log.warning("UCN query failed node=%s q=%s: %s", node, q, exc)
+    return None
 
 
 def _decode_plmn_ecgi(cell_hex):
@@ -111,16 +232,9 @@ def _fmt_gap(seconds):
 
 
 def _classify_event(row, prev, backward_secs):
-    """Return (event_text, css_class) for a REGISTERED row.
-    prev  : the row that happened just before this one (next index in DESC list), or None.
-    backward_secs : seconds from prev to this row.
-    Compatible with Python 3.8+.
-    """
     if prev is None:
         return "❓ First in window", "ev-unknown"
-
     badges = []
-
     if prev["status"] == "UNREGISTERED":
         if backward_secs < 90:
             badges.append(("🔄 Reboot", "ev-reboot"))
@@ -135,25 +249,19 @@ def _classify_event(row, prev, backward_secs):
             badges.append(("🔁 Periodic", "ev-periodic"))
         elif backward_secs > 300:
             badges.append(("📵 Coverage loss", "ev-coverage"))
-
-    if prev.get("user_agent") and prev["user_agent"] != "-"             and row["user_agent"] != prev["user_agent"]:
+    if prev.get("user_agent") and prev["user_agent"] != "-" \
+            and row["user_agent"] != prev["user_agent"]:
         badges.append(("🆕 UA changed", "ev-ua"))
-
     pc = prev.get("cell_label") or "-"
     tc = row.get("cell_label") or "-"
     if pc not in ("-", "") and tc not in ("-", "") and pc != tc:
         badges.append(("📍 Cell changed", "ev-cell"))
-
     if not badges:
         return "", ""
     return " · ".join(b[0] for b in badges), badges[0][1]
 
 
 def _add_gaps_and_classify(rows):
-    """Two-pass processing:
-    Pass 1 (all datetimes intact): compute gaps + classify events.
-    Pass 2: stringify create_date.
-    """
     n = len(rows)
     for i, row in enumerate(rows):
         if i > 0:
@@ -161,15 +269,14 @@ def _add_gaps_and_classify(rows):
             row["gap"] = _fmt_gap(fwd_secs) if fwd_secs >= 0 else ""
         else:
             row["gap"] = ""
-
         if row["status"] == "REGISTERED":
             prev     = rows[i+1] if i+1 < n else None
-            bwd_secs = int((row["create_date"] - prev["create_date"]).total_seconds())                        if prev is not None else 0
+            bwd_secs = int((row["create_date"] - prev["create_date"]).total_seconds()) \
+                       if prev is not None else 0
             row["event"], row["event_class"] = _classify_event(row, prev, bwd_secs)
         else:
             row["event"]       = ""
             row["event_class"] = ""
-
     for row in rows:
         row["create_date"] = str(row["create_date"])
     return rows
@@ -195,13 +302,8 @@ HTML = """<!DOCTYPE html>
     .reg{color:#7aee9a}.unreg{color:#e37e7e}.warn{color:#e3b97e;margin-top:1em}
     .gap{color:#888;font-size:.82em;white-space:nowrap}
     .reason{color:#888;font-size:.78em;display:block;margin-top:2px}
-    .ev-reboot{color:#60a5fa}
-    .ev-airplane{color:#a78bfa}
-    .ev-coverage{color:#f87171}
-    .ev-periodic{color:#6b7280}
-    .ev-ua{color:#34d399}
-    .ev-cell{color:#fbbf24}
-    .ev-unknown{color:#9ca3af}
+    .ev-reboot{color:#60a5fa}.ev-airplane{color:#a78bfa}.ev-coverage{color:#f87171}
+    .ev-periodic{color:#6b7280}.ev-ua{color:#34d399}.ev-cell{color:#fbbf24}.ev-unknown{color:#9ca3af}
     .info{color:#888;font-size:12px;margin-top:.5em}
     .infobox{margin-top:2em;border:1px solid #444;border-left:4px solid #7ec8e3;background:#252525;padding:1em 1.5em;font-size:13px;color:#aaa}
     .infobox h3{color:#7ec8e3;margin:0 0 .7em;font-size:14px}
@@ -223,6 +325,13 @@ HTML = """<!DOCTYPE html>
     .cell-info{color:#a78bfa;font-size:.85em}
     .cell-info a{color:#a78bfa;text-decoration:none}
     .cell-info a:hover{color:#c4b5fd;text-decoration:underline}
+    .vlr-box{margin-top:1.5em;border:1px solid #555;border-left:4px solid #f0a500;background:#252525;padding:1em 1.5em}
+    .vlr-box h3{color:#f0a500;margin:0 0 .8em;font-size:15px;display:flex;align-items:center;gap:.6em}
+    .vlr-badge{font-size:.7em;background:#3a2e00;color:#f0a500;border:1px solid #6b4e00;border-radius:4px;padding:2px 8px;font-weight:normal}
+    .vlr-box table{margin-top:.3em;font-size:13px}
+    .vlr-box th{background:#2d2d2d;color:#f0a500;padding:6px 12px;white-space:nowrap}
+    .vlr-box td{padding:6px 12px;border-bottom:1px solid #333}
+    .vlr-note{color:#666;font-size:.8em;margin-top:.8em;font-style:italic}
   </style>
   <script>
     function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -283,6 +392,37 @@ HTML = """<!DOCTYPE html>
           </td>
         </tr>{% endfor %}
       </table>
+    {% endif %}
+
+    {% if vlr %}
+    <div class="vlr-box">
+      <h3>&#128225; Live VLR Registration <span class="vlr-badge">{{ vlr.ucn_node_label }}</span></h3>
+      <table>
+        <tr>
+          <th>IMSI</th><td>{{ vlr.imsi or "-" }}</td>
+          <th>MSISDN</th><td>{{ vlr.msisdn or "-" }}</td>
+          <th>IMEI</th><td>{{ vlr.imei or "-" }}</td>
+          <th>Type</th><td>{{ vlr.type or "-" }}</td>
+        </tr><tr>
+          <th>P-CSCF</th><td>{{ vlr.pcscf or "-" }}</td>
+          <th>Reg interval</th><td>{{ vlr.reg_interval or "-" }}s</td>
+          <th>Expires</th><td colspan="3">{{ vlr.expires or "-" }}</td>
+        </tr><tr>
+          <th>Registered</th><td>{{ vlr.time_created or "-" }}</td>
+          <th>Last updated</th><td>{{ vlr.time_updated or "-" }}</td>
+          <th>HSS</th><td colspan="3">{{ vlr.hss or "-" }}</td>
+        </tr><tr>
+          <th>Cell</th>
+          <td colspan="7" class="cell-info">
+            {% if vlr.cell_url %}<a href="{{ vlr.cell_url }}" target="_blank">&#128205; {{ vlr.cell_label }}</a>
+            {% else %}{{ vlr.cell_label or "-" }}{% endif %}
+          </td>
+        </tr>
+      </table>
+      <p class="vlr-note">&#9888;&#65039; No SIP capture in Homer for this subscriber &mdash;
+        data sourced live from YATE VLR SQLite on {{ vlr.ucn_node_label }}.
+        User-Agent not stored in this DB.</p>
+    </div>
     {% endif %}
 
     <div style="display:flex;align-items:center;gap:.8em;margin-top:1em;">
@@ -471,9 +611,9 @@ REG_SELECT = """
            data_header->>'from_user'                                   AS imsi,
            data_header->>'user_agent'                                  AS user_agent,
            substring(raw FROM 'Expires: ([0-9]+)')                     AS expires,
-           substring(raw FROM 'Contact: ([^\r\n]+)')                 AS contact,
-           substring(raw FROM 'P-Access-Network-Info: ([^\r\n]+)')   AS access_info,
-           substring(raw FROM 'Reason: ([^\r\n]+)')                  AS reason
+           substring(raw FROM 'Contact: ([^\\r\\n]+)')                 AS contact,
+           substring(raw FROM 'P-Access-Network-Info: ([^\\r\\n]+)')   AS access_info,
+           substring(raw FROM 'Reason: ([^\\r\\n]+)')                  AS reason
     FROM hep_proto_1_registration
     WHERE create_date > NOW() - %(interval)s::interval
       AND data_header->>'from_user' = %(imsi)s
@@ -532,18 +672,21 @@ def lookup_registration_history(pattern, days):
 @app.route("/", methods=["GET"])
 def index():
     query = request.args.get("q", "").strip()
-    results, reg_results, error = [], [], None
+    results, reg_results, vlr, error = [], [], None, None
     if query:
         try:
-            log.info(f"Lookup: {query}")
+            log.info("Lookup: %s", query)
             results     = lookup(query)
             reg_results = lookup_registration(query)
-            log.info(f"  -> calls={len(results)} regs={len(reg_results)}")
+            log.info("  -> calls=%d regs=%d", len(results), len(reg_results))
+            if not reg_results and UCN_NODES:
+                vlr = vlr_lookup(query)
+                log.info("  -> vlr=%s", "hit on " + vlr["ucn_node"] if vlr else "miss")
         except Exception as e:
             log.exception("DB error")
             error = str(e)
     return render_template_string(HTML, query=query, results=results,
-                                  reg_results=reg_results, error=error)
+                                  reg_results=reg_results, vlr=vlr, error=error)
 
 
 @app.route("/history", methods=["GET"])
@@ -554,7 +697,7 @@ def history():
         return jsonify([])
     try:
         rows = lookup_registration_history(query, days)
-        log.info(f"History: {query} last {days}d -> {len(rows)} event(s)")
+        log.info("History: %s last %dd -> %d event(s)", query, days, len(rows))
     except Exception as e:
         log.exception("History DB error")
         return jsonify({"error": str(e)}), 500
