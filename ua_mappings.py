@@ -48,7 +48,7 @@ SAMSUNG_MODELS = {
 #   E = +3
 #   F = +4  (extrapolated)
 SAMSUNG_ANDROID_OFFSET = {
-    "A": 0, "B": 0, "C": 1, "D": 2, "E": 3, "F": 3, "G": 5,
+    "A": 0, "B": 0, "C": 1, "D": 2, "E": 3, "F": 3, "G": 4,
 }
 
 # Xiaomi HyperOS firmware first letter of 7-letter suffix → Android version
