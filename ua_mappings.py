@@ -25,10 +25,10 @@ SAMSUNG_MODELS = {
     "S906B":  ("Galaxy S22+",      12),
     "S908B":  ("Galaxy S22 Ultra", 12),
     # A-series
-    "A566B":  ("Galaxy A56",  15),
-    "A556B":  ("Galaxy A55",  14),
-    "A546B":  ("Galaxy A54",  13),
-    "A536B":  ("Galaxy A53",  12),
+    "A566B":  ("Galaxy A56",  15, "A"),
+    "A556B":  ("Galaxy A55",  14, "A"),
+    "A546B":  ("Galaxy A54",  13, "A"),
+    "A536B":  ("Galaxy A53",  12, "B"),
     "A336B":  ("Galaxy A33",  12),
     # Z Fold/Flip
     "F956B":  ("Galaxy Z Fold6", 14),
@@ -59,7 +59,6 @@ XIAOMI_ANDROID_LETTER = {
 
 
 def _samsung_android(model_code: str, firmware: str) -> str:
-    # Lookup: try exact match, then 6-char, 5-char, 4-char prefix
     info = SAMSUNG_MODELS.get(model_code)
     if not info:
         for length in (6, 5, 4):
@@ -72,20 +71,23 @@ def _samsung_android(model_code: str, firmware: str) -> str:
     if not info:
         return "Android (unknown)"
 
-    device_name, launch_android = info
+    device_name, launch_android = info[0], info[1]
+    base_letter = info[2] if len(info) > 2 else "B"   # ← default "B" keeps all existing models working
 
-    # Extract Android letter using year marker (X=2024, Y=2025, Z=2026, ...)
-    # Samsung build format: ...[ANDROID][YEAR(X/Y/Z)][MONTH(A-L)][BUILD]
     m = re.search(r'([A-Z])([W-Z])([A-L])[A-Z0-9]+$', firmware)
     if m:
         android_letter = m.group(1).upper()
-        offset = SAMSUNG_ANDROID_OFFSET.get(android_letter, 0)
+        if base_letter == "B":
+            # Existing non-linear offset table (handles A53's E→G skip etc.)
+            offset = SAMSUNG_ANDROID_OFFSET.get(android_letter, 0)
+        else:
+            # Linear calculation from base letter (A-series 2023+)
+            offset = max(0, ord(android_letter) - ord(base_letter))
         android_ver = launch_android + offset
     else:
         android_ver = launch_android
 
     return f"{device_name} \u2014 Android {android_ver}"
-
 
 def _xiaomi_android(brand: str, device: str, firmware: str) -> str:
     """
