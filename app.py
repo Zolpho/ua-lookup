@@ -132,7 +132,7 @@ def vlr_lookup(query):
                  f"{UCN_USER}@{node}",
                  f"python3 - {UCN_DB} {q}"],
                 input=_UCN_SCRIPT,
-                capture_output=True, text=True, timeout=8
+                capture_output=True, text=True, timeout=30
             )
             json_lines = [l for l in r.stdout.splitlines() if l.strip().startswith("{")]
             if not json_lines:
@@ -355,7 +355,7 @@ HTML = """<!DOCTYPE html>
   <form method="get">
     <input type="text" name="q" placeholder="MSISDN or IMSI (partial ok)" value="{{ query }}" autofocus>
     <input type="submit" value="Search">
-    <span class="info">&nbsp;Searches INVITE/BYE records, last 24 hours</span>
+    <span class="info">&nbsp;Searches INVITE/BYE records, last 72 hours</span>
   </form>
 
   {% if query %}{% if error %}
@@ -539,7 +539,7 @@ HTML = """<!DOCTYPE html>
 def get_db():
     conn = psycopg2.connect(**DB_CONFIG)
     cur  = conn.cursor()
-    cur.execute("SET statement_timeout = '15s'")
+    cur.execute("SET statement_timeout = '30s'")
     cur.execute("SET TIME ZONE 'Europe/Zurich'")
     cur.close()
     return conn
@@ -555,7 +555,7 @@ def lookup(pattern):
                data_header->>'user_agent' AS user_agent,
                data_header->>'method'     AS method
         FROM hep_proto_1_call
-        WHERE create_date > NOW() - INTERVAL '24 hours'
+        WHERE create_date > NOW() - INTERVAL '72 hours'
           AND (data_header->>'from_user' IN (%(exact)s, %(with_plus)s)
                OR data_header->>'to_user' IN (%(exact)s, %(with_plus)s))
           AND data_header->>'user_agent' IS NOT NULL
@@ -633,7 +633,7 @@ def lookup_registration(pattern):
                 cur.execute("""
                     SELECT data_header->>'from_user' AS imsi
                     FROM hep_proto_1_registration
-                    WHERE create_date > NOW() - INTERVAL '2 hours'
+                    WHERE create_date > NOW() - INTERVAL '24 hours'
                       AND raw ILIKE %(pat)s
                     ORDER BY create_date DESC LIMIT 1
                 """, {"pat": f"%{pattern}%"})

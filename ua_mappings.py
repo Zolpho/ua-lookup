@@ -1,6 +1,10 @@
 import re
 
 SAMSUNG_MODELS = {
+    # S26 series - launched Android 16 (One UI 8.5)
+    "S948B": ("Galaxy S26 Ultra", 16, "A"),
+    "S946B": ("Galaxy S26+",     16, "A"),
+    "S941B": ("Galaxy S26",      16, "A"),
     # S25 series - launched Android 15
     "S931B":  ("Galaxy S25",       15),
     "S936B":  ("Galaxy S25+",      15),
