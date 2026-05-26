@@ -161,6 +161,74 @@ def vlr_lookup(query):
     return None
 
 
+
+RAT_TYPE_MAP = {
+    "0": "ANY", "1": "UTRAN", "2": "GERAN", "3": "WLAN",
+    "4": "GAN",  "5": "HSPA", "6": "EUTRAN", "7": "VIRTUAL",
+    "8": "NB-IoT", "9": "NRTRAN", "10": "NR",
+}
+
+def bearer_lookup(query):
+    """Query all UCN nodes for active bearer sessions.
+    Returns IMS IP, Internet IP, SGW/ePDG IP, APN, RAT type, component, cell type.
+    Uses UCN_USER / UCN_NODES / UCN_DB env vars.
+    """
+    if not UCN_NODES:
+        return []
+    q = query.lstrip("+")
+    results = []
+    sql = (
+        "SELECT b.msisdn,b.imsi,b.ipv4,b.address,"
+        "b.apn,b.rat_type,b.component,"
+        "r.location,r.cell_type,"
+        "datetime(b.time_created/1000,\'unixepoch\') "
+        "FROM bearers b "
+        "LEFT JOIN cs_regs r ON r.imsi LIKE \'%\'||b.imsi||\'%\' "
+        f"WHERE b.msisdn=\'{q}\'"
+    )
+    for node in UCN_NODES:
+        try:
+            r = subprocess.run(
+                ["ssh",
+                 "-o", "ConnectTimeout=4",
+                 "-o", "StrictHostKeyChecking=no",
+                 "-o", "BatchMode=yes",
+                 f"{UCN_USER}@{node}",
+                 f"sqlite3 {UCN_DB} \"{sql}\""],
+                capture_output=True, text=True, timeout=10
+            )
+            for line in r.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("|")
+                if len(parts) < 10:
+                    continue
+                # cols: 0=msisdn 1=imsi 2=ipv4 3=address 4=apn
+                #        5=rat_type 6=component 7=location 8=cell_type 9=session_start
+                ims_raw   = parts[7].strip()
+                ims_ip    = re.sub(r"^sip/sip:[^@]+@", "", ims_raw)
+                ims_ip    = ims_ip.split(":")[0] if ims_ip else "-"
+                rat_raw   = parts[5].strip()
+                rat_label = RAT_TYPE_MAP.get(rat_raw, rat_raw) if rat_raw else "-"
+                hostname  = UCN_HOSTNAMES.get(node, node)
+                results.append({
+                    "node":          f"{hostname} ({node})",
+                    "msisdn":        parts[0].strip(),
+                    "imsi":          parts[1].strip(),
+                    "internet_ip":   parts[2].strip() or "-",
+                    "sgw_ip":        parts[3].strip() or "-",
+                    "apn":           parts[4].strip() or "-",
+                    "rat_type":      rat_label,
+                    "component":     parts[6].strip() or "-",
+                    "ims_ip":        ims_ip or "-",
+                    "cell_type":     parts[8].strip() or "-",
+                    "session_start": parts[9].strip() or "-",
+                })
+        except Exception as exc:
+            log.warning("Bearer query failed node=%s q=%s: %s", node, q, exc)
+    return results
+
 def _decode_plmn_ecgi(cell_hex):
     if len(cell_hex) < 16:
         return None
@@ -332,6 +400,12 @@ HTML = """<!DOCTYPE html>
     .vlr-box th{background:#2d2d2d;color:#f0a500;padding:6px 12px;white-space:nowrap}
     .vlr-box td{padding:6px 12px;border-bottom:1px solid #333}
     .vlr-note{color:#666;font-size:.8em;margin-top:.8em;font-style:italic}
+    .bearer-box{margin-top:1.5em;border:1px solid #555;border-left:4px solid #5ec4ff;background:#252525;padding:1em 1.5em}
+    .bearer-box h3{color:#5ec4ff;margin:0 0 .6em;font-size:15px}
+    .bearer-box table{margin-top:.3em;font-size:13px}
+    .bearer-box th{background:#2d2d2d;color:#5ec4ff;padding:6px 12px;white-space:nowrap}
+    .bearer-box td{padding:6px 12px;border-bottom:1px solid #333}
+    .vowifi{color:#f0a500;font-weight:bold}
   </style>
   <script>
     function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -392,6 +466,30 @@ HTML = """<!DOCTYPE html>
           </td>
         </tr>{% endfor %}
       </table>
+    {% endif %}
+
+
+    {% if bearer_results %}
+    <div class="bearer-box">
+      <h3>&#127758; Active Bearer Sessions (PDN)</h3>
+      <table>
+        <tr>
+          <th>Node</th><th>IMS IP</th><th>Internet IP</th><th>SGW / ePDG IP</th>
+          <th>APN</th><th>RAT Type</th><th>Component</th><th>Cell Type</th><th>Session Start</th>
+        </tr>
+        {% for b in bearer_results %}<tr>
+          <td style="color:#888;font-size:.85em">{{ b.node }}</td>
+          <td style="color:#7aee9a">{{ b.ims_ip }}</td>
+          <td style="color:#7ec8e3">{{ b.internet_ip }}</td>
+          <td{% if b.rat_type == 'WLAN' %} class="vowifi"{% endif %}>{{ b.sgw_ip }}</td>
+          <td>{{ b.apn }}</td>
+          <td{% if b.rat_type == 'WLAN' %} class="vowifi"{% endif %}>{{ b.rat_type }}</td>
+          <td>{{ b.component }}</td>
+          <td>{{ b.cell_type }}</td>
+          <td>{{ b.session_start }}</td>
+        </tr>{% endfor %}
+      </table>
+    </div>
     {% endif %}
 
     {% if vlr %}
@@ -672,13 +770,14 @@ def lookup_registration_history(pattern, days):
 @app.route("/", methods=["GET"])
 def index():
     query = request.args.get("q", "").strip()
-    results, reg_results, vlr, error = [], [], None, None
+    results, reg_results, bearer_results, vlr, error = [], [], [], None, None
     if query:
         try:
             log.info("Lookup: %s", query)
-            results     = lookup(query)
-            reg_results = lookup_registration(query)
-            log.info("  -> calls=%d regs=%d", len(results), len(reg_results))
+            results        = lookup(query)
+            reg_results    = lookup_registration(query)
+            bearer_results = bearer_lookup(query)
+            log.info("  -> calls=%d regs=%d bearers=%d", len(results), len(reg_results), len(bearer_results))
             if not reg_results and UCN_NODES:
                 vlr = vlr_lookup(query)
                 log.info("  -> vlr=%s", "hit on " + vlr["ucn_node"] if vlr else "miss")
@@ -686,7 +785,8 @@ def index():
             log.exception("DB error")
             error = str(e)
     return render_template_string(HTML, query=query, results=results,
-                                  reg_results=reg_results, vlr=vlr, error=error)
+                                  reg_results=reg_results, bearer_results=bearer_results,
+                                  vlr=vlr, error=error)
 
 
 @app.route("/history", methods=["GET"])
@@ -706,4 +806,3 @@ def history():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
-
