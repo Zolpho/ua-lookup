@@ -12,6 +12,7 @@ import datetime
 import duckdb
 from ua_mappings import get_android_version
 from cell_location import decode_eutran_cell
+from registration_history import pair_successful_registrations
 
 def _require_env(key):
     val = os.environ.get(key)
@@ -590,56 +591,74 @@ def reg_lookup(msisdn: str, days: int = 7) -> list:
     pat = f"%{imsi}%"
     log.info("reg_lookup: msisdn=%s imsi=%s", q, imsi)
     sql = f"""
+        WITH relevant_sessions AS (
+            SELECT DISTINCT session_id
+            FROM homer_lake.main.hep_proto_1_registration
+            WHERE timestamp >= NOW() - INTERVAL '{days} days'
+              AND (aor LIKE ? OR payload LIKE ?)
+        )
         SELECT
-            MIN(timestamp) AS timestamp,
-            ANY_VALUE(aor) AS aor,
-            MAX(CASE WHEN payload LIKE 'REGISTER%' THEN src_ip END) AS src_ip,
-            MAX(user_agent) AS user_agent,
-            MAX(CASE WHEN payload LIKE 'SIP/2.0 200%' THEN expires END) AS expires,
-            MAX(CASE WHEN payload LIKE 'SIP/2.0 200%' THEN contact END) AS contact,
-            COALESCE(
-                MAX(CASE WHEN payload LIKE '%P-Access-Network-Info%' THEN payload END),
-                MAX(payload)
-            ) AS payload
-        FROM homer_lake.main.hep_proto_1_registration
-        WHERE timestamp >= NOW() - INTERVAL '{days} days'
-          AND session_id IN (
-              SELECT DISTINCT session_id
-              FROM homer_lake.main.hep_proto_1_registration
-              WHERE timestamp >= NOW() - INTERVAL '{days} days'
-                AND (aor LIKE ? OR payload LIKE ?)
-          )
-        GROUP BY session_id
-        ORDER BY timestamp DESC
-        LIMIT 2000
+            registration.timestamp,
+            registration.session_id,
+            registration.aor,
+            registration.src_ip,
+            registration.user_agent,
+            registration.expires,
+            registration.contact,
+            registration.payload
+        FROM homer_lake.main.hep_proto_1_registration AS registration
+        INNER JOIN relevant_sessions
+            ON relevant_sessions.session_id = registration.session_id
+        WHERE registration.timestamp >= NOW() - INTERVAL '{days} days'
+        ORDER BY registration.timestamp DESC
+        LIMIT 20000
     """
     con = _get_duck()
     try:
         rows = con.execute(sql, [pat, pat]).fetchall()
     finally:
         con.close()
-    cols = ["timestamp", "aor", "src_ip", "user_agent", "expires", "contact", "payload"]
+    cols = [
+        "timestamp",
+        "session_id",
+        "aor",
+        "src_ip",
+        "user_agent",
+        "expires",
+        "contact",
+        "payload",
+    ]
+    records = [dict(zip(cols, raw)) for raw in rows]
+    events = pair_successful_registrations(records, imsi)
+    log.info(
+        "reg_lookup: paired %d successful event(s) from %d raw row(s)",
+        len(events),
+        len(records),
+    )
 
-    seen, out = set(), []
-    for raw in rows:
-        r = dict(zip(cols, raw))
-        aor     = (r.get("aor") or "")
-        payload = (r.get("payload") or "")
-        if q not in aor and q not in payload and q not in (r.get("src_ip") or ""):
-            # still skip if truly unrelated (e.g. noise from broad payload match)
-            pass  # session_id subquery already filtered correctly
-        key = (str(r["timestamp"]), r.get("src_ip", ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        ua = (r.get("user_agent") or "").strip()
-        try:    expires_val = int(r.get("expires") or 0)
-        except: expires_val = 0
+    out = []
+    for event in events:
+        registration = event["request"]
+        response = event["response"]
+        aor = registration.get("aor") or response.get("aor") or ""
+        payload = registration.get("payload") or ""
+        ua = (
+            registration.get("user_agent")
+            or response.get("user_agent")
+            or ""
+        ).strip()
+        expires = response.get("expires")
+        if expires in (None, ""):
+            expires = registration.get("expires")
+        try:
+            expires_val = int(expires or 0)
+        except (TypeError, ValueError):
+            expires_val = 0
         status = "UNREGISTERED" if expires_val == 0 else "REGISTERED"
         pan  = _hdr(payload, "P-Access-Network-Info")
         cell = resolve_cell(pan)
         try:
-            cd = r["timestamp"]
+            cd = registration["timestamp"]
             if not hasattr(cd, "tzinfo"):
                 cd = datetime.datetime.fromisoformat(str(cd).replace("Z", "+00:00"))
             if cd.tzinfo is None:
@@ -650,13 +669,13 @@ def reg_lookup(msisdn: str, days: int = 7) -> list:
             "create_date": cd,
             "status":      status,
             "imsi":        aor,
-            "src_ip":      r.get("src_ip", ""),
+            "src_ip":      registration.get("src_ip", ""),
             "user_agent":  ua if ua and not UA_EXCLUDE.search(ua) else "-",
             "expires":     expires_val,
-            "contact":     r.get("contact", "") or "",
+            "contact":     response.get("contact") or registration.get("contact") or "",
             "cell_label":  cell["label"],
             "cell_url":    cell["url"],
-            "reason":      _hdr(payload, "Reason"),
+            "reason":      _hdr(response.get("payload") or payload, "Reason"),
         })
     out.sort(key=lambda x: x["create_date"], reverse=True)
     return _add_gaps_and_classify(out)

@@ -16,6 +16,16 @@ class DecodeEutranCellTests(unittest.TestCase):
         self.assertEqual(cell.tac_hex, "02be")
         self.assertEqual(cell.eci_hex, "11ca605")
 
+    def test_decodes_winterthur_registration_value(self):
+        cell = decode_eutran_cell("228010e17124f404")
+
+        self.assertEqual(cell.mcc, 228)
+        self.assertEqual(cell.mnc, 1)
+        self.assertEqual(cell.tac, 3607)
+        self.assertEqual(cell.eci, 19_198_980)
+        self.assertEqual(cell.enb_id, 74_996)
+        self.assertEqual(cell.cell_id, 4)
+
     def test_decodes_3gpp_two_digit_mnc_example(self):
         cell = decode_eutran_cell("1112233C476B4321")
 
