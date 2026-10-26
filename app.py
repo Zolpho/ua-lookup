@@ -784,32 +784,22 @@ details[open] summary{margin-bottom:.4rem}
 <p class="nodata">No active bearer found for <strong>{{ query }}</strong> on any UCN node.</p>
 {% endif %}
 
-<h2>📱 Recent Call User-Agents
-  <small style="font-weight:400;font-size:.85rem">
-    (last {{ days }} day{{ 's' if days != 1 else '' }})
-  </small>
-</h2>
-{% if ua_rows %}
-<table>
+<h2>📱 Latest Registration User-Agent</h2>
+{% if device_row %}
+<table style="max-width:1000px">
+  <tr><th>User-Agent</th><th>Observed at</th><th>Access / Cell</th></tr>
   <tr>
-    <th>Timestamp</th><th>User-Agent</th><th>OS Version</th>
-    <th>From</th><th>To</th><th>Src IP</th><th>Method</th>
+    <td><strong>{{ device_row.user_agent }}</strong></td>
+    <td>{{ device_row.create_date }}</td>
+    <td>{% if device_row.cell_url %}
+      <a href="{{ device_row.cell_url }}" target="_blank">
+        📍 {{ device_row.cell_label }}</a>
+      {% else %}{{ device_row.cell_label }}{% endif %}</td>
   </tr>
-  {% for r in ua_rows %}
-  <tr>
-    <td>{{ r.create_date }}</td>
-    <td>{{ r.user_agent }}</td>
-    <td>{{ r.os_version or "—" }}</td>
-    <td>{{ r.from_user }}</td>
-    <td>{{ r.to_user }}</td>
-    <td class="mono">{{ r.src_ip }}</td>
-    <td>{{ r.method }}</td>
-  </tr>
-  {% endfor %}
 </table>
 {% else %}
-<p class="nodata">No call UA found for <strong>{{ query }}</strong>
-  — subscriber may not have VoLTE active.</p>
+<p class="nodata">No User-Agent was found in successful IMS registrations for
+  <strong>{{ query }}</strong> during the selected period.</p>
 {% endif %}
 
 <h2>📋 Registration History
@@ -1552,17 +1542,24 @@ def index():
 
     if not query:
         return render_template_string(HTML, query="", days=days, error=None,
-                                      ua_rows=[], reg_rows=[], vlr=None, bearer_rows=[])
+                                      reg_rows=[], device_row=None,
+                                      vlr=None, bearer_rows=[])
 
     error = None
-    ua_rows = []
     reg_rows = []
+    device_row = None
     vlr = None
     bearer_rows = []
 
     try:
-        ua_rows  = ua_lookup(query, days)
         reg_rows = reg_lookup(query, days)
+        device_row = next(
+            (
+                row for row in reg_rows
+                if row.get("user_agent") not in (None, "", "-")
+            ),
+            None,
+        )
     except Exception as exc:
         log.exception("DuckDB lookup failed for %s", query)
         error = str(exc)
@@ -1576,7 +1573,7 @@ def index():
         log.warning("Bearer lookup failed for %s: %s", query, exc)
 
     return render_template_string(HTML, query=query, days=days, error=error,
-                                  ua_rows=ua_rows, reg_rows=reg_rows,
+                                  reg_rows=reg_rows, device_row=device_row,
                                   vlr=vlr, bearer_rows=bearer_rows)
 
 @app.route("/health")
