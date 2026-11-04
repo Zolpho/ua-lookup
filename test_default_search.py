@@ -56,6 +56,8 @@ class DefaultSearchTests(unittest.TestCase):
         self.assertIn("Latest Registration User-Agent", template)
         self.assertIn("device_row.user_agent", template)
         self.assertIn("Registration History", template)
+        self.assertIn("Timestamp (Zurich)", template)
+        self.assertIn("Observed at (Zurich)", template)
         self.assertNotIn("Recent Call User-Agents", template)
 
 

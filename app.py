@@ -13,6 +13,7 @@ import duckdb
 from ua_mappings import get_android_version
 from cell_location import decode_eutran_cell
 from registration_history import pair_successful_registrations
+from time_display import format_zurich_datetime
 
 def _require_env(key):
     val = os.environ.get(key)
@@ -499,7 +500,7 @@ def _add_gaps_and_classify(rows):
             row["event"] = ""
             row["event_class"] = ""
     for row in rows:
-        row["create_date"] = str(row["create_date"])
+        row["create_date"] = format_zurich_datetime(row["create_date"])
     return rows
 
 def _hdr(payload: str, name: str) -> str:
@@ -787,7 +788,7 @@ details[open] summary{margin-bottom:.4rem}
 <h2>📱 Latest Registration User-Agent</h2>
 {% if device_row %}
 <table style="max-width:1000px">
-  <tr><th>User-Agent</th><th>Observed at</th><th>Access / Cell</th></tr>
+  <tr><th>User-Agent</th><th>Observed at (Zurich)</th><th>Access / Cell</th></tr>
   <tr>
     <td><strong>{{ device_row.user_agent }}</strong></td>
     <td>{{ device_row.create_date }}</td>
@@ -810,7 +811,7 @@ details[open] summary{margin-bottom:.4rem}
 {% if reg_rows %}
 <table>
   <tr>
-    <th>Timestamp</th><th>Gap ↑</th><th>Event</th><th>Status</th>
+    <th>Timestamp (Zurich)</th><th>Gap ↑</th><th>Event</th><th>Status</th>
     <th>AoR / IMSI</th><th>Src IP</th><th>User-Agent</th>
     <th>Expires (s)</th><th>Contact</th><th>Cell</th>
   </tr>
