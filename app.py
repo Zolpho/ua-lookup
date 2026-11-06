@@ -64,9 +64,17 @@ GOOGLE_FAILURE_CACHE_TTL_SEC = int(
 )
 
 RAT_TYPE_MAP = {
-    "0": "ANY", "1": "UTRAN", "2": "GERAN", "3": "WLAN", "4": "GAN",
-    "5": "HSPA", "6": "EUTRAN", "7": "VIRTUAL", "8": "NB-IoT",
-    "9": "NRTRAN", "10": "NR",
+    "0": "ANY",
+    "1": "UTRAN (3G UMTS)",
+    "2": "GERAN (2G GSM/EDGE)",
+    "3": "WLAN (Wi-Fi)",
+    "4": "GAN (Wi-Fi/UMA)",
+    "5": "HSPA (3G HSPA+)",
+    "6": "EUTRAN (4G LTE)",
+    "7": "VIRTUAL",
+    "8": "NB-IoT (4G LTE)",
+    "9": "NRTRAN (5G)",
+    "10": "NR (5G)",
 }
 
 _UCN_SCRIPT = (

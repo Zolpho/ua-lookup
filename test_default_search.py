@@ -40,6 +40,18 @@ def html_template(tree):
     raise AssertionError("HTML template assignment not found")
 
 
+def literal_assignment(tree, name):
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} assignment not found")
+
+
 class DefaultSearchTests(unittest.TestCase):
     def test_default_index_uses_registration_not_call_lookup(self):
         index = function_named(parsed_app(), "index")
@@ -72,6 +84,18 @@ class DefaultSearchTests(unittest.TestCase):
         self.assertIn("Registered (Zurich)", template)
         self.assertIn("Last updated (Zurich)", template)
         self.assertIn("Expires (Zurich)", template)
+
+    def test_rat_labels_include_network_generation(self):
+        labels = literal_assignment(parsed_app(), "RAT_TYPE_MAP")
+
+        self.assertEqual(labels["1"], "UTRAN (3G UMTS)")
+        self.assertEqual(labels["2"], "GERAN (2G GSM/EDGE)")
+        self.assertEqual(labels["3"], "WLAN (Wi-Fi)")
+        self.assertEqual(labels["5"], "HSPA (3G HSPA+)")
+        self.assertEqual(labels["6"], "EUTRAN (4G LTE)")
+        self.assertEqual(labels["8"], "NB-IoT (4G LTE)")
+        self.assertEqual(labels["9"], "NRTRAN (5G)")
+        self.assertEqual(labels["10"], "NR (5G)")
 
 
 if __name__ == "__main__":
