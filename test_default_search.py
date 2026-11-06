@@ -60,6 +60,19 @@ class DefaultSearchTests(unittest.TestCase):
         self.assertIn("Observed at (Zurich)", template)
         self.assertNotIn("Recent Call User-Agents", template)
 
+    def test_ucn_timestamps_are_converted_and_labelled_as_zurich(self):
+        tree = parsed_app()
+        vlr_calls = called_function_names(function_named(tree, "vlr_lookup"))
+        bearer_calls = called_function_names(function_named(tree, "bearer_lookup"))
+        template = html_template(tree)
+
+        self.assertIn("format_utc_text_as_zurich", vlr_calls)
+        self.assertIn("format_utc_text_as_zurich", bearer_calls)
+        self.assertIn("Session Start (Zurich)", template)
+        self.assertIn("Registered (Zurich)", template)
+        self.assertIn("Last updated (Zurich)", template)
+        self.assertIn("Expires (Zurich)", template)
+
 
 if __name__ == "__main__":
     unittest.main()

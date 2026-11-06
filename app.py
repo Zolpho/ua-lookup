@@ -13,7 +13,7 @@ import duckdb
 from ua_mappings import get_android_version
 from cell_location import decode_eutran_cell
 from registration_history import pair_successful_registrations
-from time_display import format_zurich_datetime
+from time_display import format_utc_text_as_zurich, format_zurich_datetime
 
 def _require_env(key):
     val = os.environ.get(key)
@@ -161,6 +161,8 @@ def vlr_lookup(query):
                 continue
             if data.get("imsi") and "@" in str(data["imsi"]):
                 data["imsi"] = data["imsi"].split("@")[0]
+            for key in ("time_created", "time_updated", "expires"):
+                data[key] = format_utc_text_as_zurich(data.get(key))
             pcscf = data.get("pcscf") or ""
             data["pcscf"] = re.sub(r"^sip/sip:[^@]+@", "", pcscf)
             cell = _resolve_cell_from_vlr(data.get("cell_split"), data.get("cell_type"))
@@ -210,6 +212,7 @@ def bearer_lookup(query):
                 rat_raw   = parts[5].strip()
                 rat_label = RAT_TYPE_MAP.get(rat_raw, rat_raw) if rat_raw else "-"
                 hostname  = UCN_HOSTNAMES.get(node, node)
+                session_start = format_utc_text_as_zurich(parts[9].strip()) or "-"
                 results.append({
                     "node":          f"{hostname} ({node})",
                     "msisdn":        parts[0].strip(),
@@ -221,7 +224,7 @@ def bearer_lookup(query):
                     "component":     parts[6].strip() or "-",
                     "ims_ip":        ims_ip or "-",
                     "cell_type":     parts[8].strip() or "-",
-                    "session_start": parts[9].strip() or "-",
+                    "session_start": session_start,
                 })
         except Exception as exc:
             log.warning("Bearer query failed node=%s q=%s: %s", node, q, exc)
@@ -765,7 +768,7 @@ details[open] summary{margin-bottom:.4rem}
     <th class="bearer-th">RAT</th>
     <th class="bearer-th">Component</th>
     <th class="bearer-th">Cell Type</th>
-    <th class="bearer-th">Session Start</th>
+    <th class="bearer-th">Session Start (Zurich)</th>
   </tr>
   {% for b in bearer_rows %}
   <tr>
@@ -857,10 +860,10 @@ details[open] summary{margin-bottom:.4rem}
       <td><b>Type</b></td><td>{{ vlr.type or "—" }}</td></tr>
   <tr><td><b>P-CSCF</b></td><td class="mono">{{ vlr.pcscf or "—" }}</td>
       <td><b>Reg interval</b></td><td>{{ vlr.reg_interval or "—" }}s</td></tr>
-  <tr><td><b>Registered</b></td><td>{{ vlr.time_created or "—" }}</td>
-      <td><b>Last updated</b></td><td>{{ vlr.time_updated or "—" }}</td></tr>
+  <tr><td><b>Registered (Zurich)</b></td><td>{{ vlr.time_created or "—" }}</td>
+      <td><b>Last updated (Zurich)</b></td><td>{{ vlr.time_updated or "—" }}</td></tr>
   <tr><td><b>HSS</b></td><td>{{ vlr.hss or "—" }}</td>
-      <td><b>Expires</b></td><td>{{ vlr.expires or "—" }}</td></tr>
+      <td><b>Expires (Zurich)</b></td><td>{{ vlr.expires or "—" }}</td></tr>
   <tr><td><b>Cell</b></td>
       <td colspan="3">{% if vlr.cell_url %}
         <a href="{{ vlr.cell_url }}" target="_blank">📍 {{ vlr.cell_label }}</a>
