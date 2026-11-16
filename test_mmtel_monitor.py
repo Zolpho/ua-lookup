@@ -37,6 +37,21 @@ class ContactClassificationTests(unittest.TestCase):
 
 
 class DeviceMetadataTests(unittest.TestCase):
+    def test_apple_iphone_keeps_full_ios_version(self):
+        metadata = parse_device_metadata("iOS/27.0.1 iPhone")
+
+        self.assertEqual(
+            metadata,
+            {
+                "model": "Apple iPhone",
+                "build_number": "",
+                "os_version": "iOS 27.0.1",
+                "security": "",
+                "fw_release_date": "",
+                "security_patch_level": "",
+            },
+        )
+
     def test_known_samsung_build_uses_official_firmware_metadata(self):
         metadata = parse_device_metadata(
             "SM-A566B-A566BXXS6AYGE Samsung IMS 6.0"
@@ -44,7 +59,7 @@ class DeviceMetadataTests(unittest.TestCase):
 
         self.assertEqual(metadata["model"], "Galaxy A56")
         self.assertEqual(metadata["build_number"], "A566BXXS6AYGE")
-        self.assertEqual(metadata["android_version"], "Android 15")
+        self.assertEqual(metadata["os_version"], "Android 15")
         self.assertEqual(metadata["security"], "Security-only update")
         self.assertEqual(metadata["fw_release_date"], "2025-08-05")
         self.assertEqual(metadata["security_patch_level"], "2025-08-01")
@@ -56,10 +71,25 @@ class DeviceMetadataTests(unittest.TestCase):
 
         self.assertEqual(metadata["model"], "Pixel8")
         self.assertEqual(metadata["build_number"], "BP4A.260205.001")
-        self.assertEqual(metadata["android_version"], "Android 16")
+        self.assertEqual(metadata["os_version"], "Android 16")
         self.assertEqual(metadata["security"], "")
         self.assertEqual(metadata["fw_release_date"], "")
         self.assertEqual(metadata["security_patch_level"], "")
+
+    def test_unrecognized_user_agent_does_not_invent_metadata(self):
+        metadata = parse_device_metadata("VendorPhone IMS client/9.4")
+
+        self.assertEqual(
+            metadata,
+            {
+                "model": "",
+                "build_number": "",
+                "os_version": "",
+                "security": "",
+                "fw_release_date": "",
+                "security_patch_level": "",
+            },
+        )
 
 
 class ReportTests(unittest.TestCase):
@@ -150,6 +180,48 @@ class ReportTests(unittest.TestCase):
             "228580000000003",
             [row["imsi"] for row in report["missing_mmtel"]],
         )
+
+    def test_report_preserves_complete_unrecognized_user_agent(self):
+        user_agent = "VendorPhone IMS client/9.4 (custom build)"
+        rows = [
+            {
+                "timestamp": datetime.datetime(2026, 11, 16, 10, 0, tzinfo=UTC),
+                "imsi": "228580000000004",
+                "user_agent": user_agent,
+                "contact": "<sip:a@b>;+g.3gpp.smsip",
+            },
+        ]
+
+        report = build_monitor_report(rows, {})
+
+        self.assertEqual(report["missing_mmtel"][0]["user_agent"], user_agent)
+        self.assertEqual(report["missing_mmtel"][0]["model"], "")
+        self.assertEqual(report["missing_mmtel"][0]["os_version"], "")
+
+    def test_latest_mmtel_present_registration_is_not_a_problem(self):
+        imsi = "228580000000005"
+        rows = [
+            {
+                "timestamp": datetime.datetime(2026, 11, 16, 9, 0, tzinfo=UTC),
+                "imsi": imsi,
+                "user_agent": "iOS/27.0.1 iPhone",
+                "contact": "<sip:a@b>;+g.3gpp.smsip",
+            },
+            {
+                "timestamp": datetime.datetime(2026, 11, 16, 10, 0, tzinfo=UTC),
+                "imsi": imsi,
+                "user_agent": "iOS/27.0.1 iPhone",
+                "contact": (
+                    '<sip:a@b>;+g.3gpp.icsi-ref="urn%3Aurn-7%3A'
+                    '3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip'
+                ),
+            },
+        ]
+
+        report = build_monitor_report(rows, {})
+
+        self.assertEqual(report["missing_mmtel"], [])
+        self.assertEqual(report["unable_to_verify"], [])
 
 
 class UcnMappingTests(unittest.TestCase):

@@ -1159,13 +1159,24 @@ h2{font-size:1.05rem;margin:1.4rem 0 .5rem;border-bottom:2px solid var(--pri);
 .note,.error{padding:.65rem .8rem;border:1px solid var(--bd);border-radius:var(--r);
              background:var(--surf);margin:.7rem 0;font-size:.88rem}
 .error{border-color:#e6a8a8;color:var(--danger);background:#fff1f1}
+.monitor-controls{display:flex;align-items:end;gap:.6rem;flex-wrap:wrap;
+                  margin:.9rem 0 1rem}
+.monitor-controls label{display:flex;flex-direction:column;gap:.25rem;color:var(--muted);
+                        font-size:.82rem;font-weight:600}
+.monitor-controls input{width:min(430px,85vw);padding:.45rem .55rem;border:1px solid var(--bd);
+                        border-radius:var(--r);background:var(--surf);color:var(--text)}
 .table-wrap{overflow-x:auto;background:var(--surf);border:1px solid var(--bd);
             border-radius:var(--r)}
 table{border-collapse:collapse;width:100%;font-size:.8rem}
 th{background:var(--pri);color:#fff;text-align:left;padding:.45rem .55rem;
    white-space:nowrap;font-weight:600}
+.sort-button{appearance:none;border:0;background:transparent;color:inherit;font:inherit;
+             font-weight:600;padding:0;cursor:pointer}
+th[aria-sort="ascending"] .sort-button::after{content:" ▲"}
+th[aria-sort="descending"] .sort-button::after{content:" ▼"}
 td{padding:.42rem .55rem;border-bottom:1px solid var(--bd);vertical-align:top}
 tr:last-child td{border-bottom:0}tr:hover td{background:#f0f8f8}
+tr[hidden]{display:none}.section-count{color:var(--muted);font-size:.8rem;font-weight:400}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}
 .ua{min-width:250px;overflow-wrap:anywhere}.muted{color:var(--muted)}
 details summary{cursor:pointer;color:var(--pri)}
@@ -1203,24 +1214,45 @@ details code{display:block;max-width:520px;white-space:normal;overflow-wrap:anyw
   catalog match is available.
 </div>
 
-{% macro device_table(rows) -%}
+<div class="monitor-controls">
+  <label for="monitor-filter">Filter problem registrations
+    <input id="monitor-filter" type="search"
+           placeholder="Filter device, build, OS or User-Agent"
+           autocomplete="off">
+  </label>
+</div>
+
+{% macro device_table(rows, section_id) -%}
 <div class="table-wrap">
-<table>
+<table data-monitor-table data-section-id="{{ section_id }}">
   <thead><tr>
-    <th>Last REGISTER (Zurich)</th><th>MSISDN</th><th>IMSI</th><th>Device</th>
-    <th>Build number</th><th>Android version</th><th>Security</th>
-    <th>Firmware release</th><th>Security patch level</th><th>User-Agent</th>
+    <th>Last REGISTER (Zurich)</th><th>MSISDN</th><th>IMSI</th>
+    <th data-sort-key="device" aria-sort="none"><button type="button"
+        class="sort-button" data-sort-key="device">Device</button></th>
+    <th data-sort-key="build" aria-sort="none"><button type="button"
+        class="sort-button" data-sort-key="build">Build number</button></th>
+    <th data-sort-key="os" aria-sort="none"><button type="button"
+        class="sort-button" data-sort-key="os">OS version</button></th>
+    <th>Security</th>
+    <th>Firmware release</th><th>Security patch level</th>
+    <th data-sort-key="user_agent" aria-sort="none"><button type="button"
+        class="sort-button" data-sort-key="user_agent">User-Agent</button></th>
     <th>Contact evidence</th>
   </tr></thead>
   <tbody>
   {% for row in rows %}
-  <tr>
+  <tr data-monitor-row
+      data-device="{{ row.model|e }}"
+      data-build="{{ row.build_number|e }}"
+      data-os="{{ row.os_version|e }}"
+      data-user-agent="{{ row.user_agent|e }}"
+      data-original-index="{{ loop.index0 }}">
     <td class="mono">{{ row.timestamp_zurich }}</td>
     <td class="mono">{{ row.msisdn or "—" }}</td>
     <td class="mono">{{ row.imsi }}</td>
     <td>{{ row.model or "—" }}</td>
     <td class="mono">{{ row.build_number or "—" }}</td>
-    <td>{{ row.android_version or "—" }}</td>
+    <td>{{ row.os_version or "—" }}</td>
     <td>{{ row.security or "—" }}</td>
     <td class="mono">{{ row.fw_release_date or "—" }}</td>
     <td class="mono">{{ row.security_patch_level or "—" }}</td>
@@ -1232,25 +1264,154 @@ details code{display:block;max-width:520px;white-space:normal;overflow-wrap:anyw
   </tbody>
 </table>
 </div>
+<p class="note" data-no-match="{{ section_id }}" hidden>
+  No problem registrations match the current filter.
+</p>
 {%- endmacro %}
 
-<h2>Confirmed missing MMTEL</h2>
+<h2>Confirmed missing MMTEL
+  <span class="section-count" data-visible-count="missing">
+    {{ report.missing_mmtel|length }} shown
+  </span>
+</h2>
 {% if report.missing_mmtel %}
-  {{ device_table(report.missing_mmtel) }}
+  {{ device_table(report.missing_mmtel, "missing") }}
 {% else %}
   <p class="note">No latest registration was confirmed without MMTEL.</p>
 {% endif %}
 
-<h2>Unable to verify</h2>
+<h2>Unable to verify
+  <span class="section-count" data-visible-count="unverifiable">
+    {{ report.unable_to_verify|length }} shown
+  </span>
+</h2>
 <p class="muted" style="font-size:.86rem;margin-bottom:.45rem">
   These successful registrations had no usable device Contact header. They are
   not counted as confirmed missing MMTEL.
 </p>
 {% if report.unable_to_verify %}
-  {{ device_table(report.unable_to_verify) }}
+  {{ device_table(report.unable_to_verify, "unverifiable") }}
 {% else %}
   <p class="note">Every latest registration had a usable Contact header.</p>
 {% endif %}
+<script>
+const MONITOR_STORAGE_KEY = "ua-mmtel-monitor-controls-v1";
+const monitorState = loadMonitorState();
+
+function loadMonitorState() {
+  const fallback = {filter: "", sortKey: "", direction: "asc"};
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(MONITOR_STORAGE_KEY) || "null");
+    const allowedKeys = ["device", "build", "os", "user_agent"];
+    if (!saved || typeof saved !== "object") return fallback;
+    return {
+      filter: typeof saved.filter === "string" ? saved.filter : "",
+      sortKey: allowedKeys.includes(saved.sortKey) ? saved.sortKey : "",
+      direction: saved.direction === "desc" ? "desc" : "asc"
+    };
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function saveMonitorState(state) {
+  try {
+    sessionStorage.setItem(MONITOR_STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    // Filtering and sorting still work when browser storage is unavailable.
+  }
+}
+
+function normalizedMonitorValue(value) {
+  return String(value || "").toLocaleLowerCase();
+}
+
+function applyMonitorControls() {
+  const filterValue = normalizedMonitorValue(monitorState.filter).trim();
+  const datasetKeys = {
+    device: "device",
+    build: "build",
+    os: "os",
+    user_agent: "userAgent"
+  };
+
+  document.querySelectorAll("[data-monitor-table]").forEach(function(table) {
+    const body = table.querySelector("tbody");
+    const rows = Array.from(table.querySelectorAll("[data-monitor-row]"));
+    const sortKey = datasetKeys[monitorState.sortKey];
+
+    rows.sort(function(left, right) {
+      let comparison = 0;
+      if (sortKey) {
+        comparison = normalizedMonitorValue(left.dataset[sortKey]).localeCompare(
+          normalizedMonitorValue(right.dataset[sortKey]),
+          undefined,
+          {numeric: true, sensitivity: "base"}
+        );
+        if (comparison && monitorState.direction === "desc") comparison *= -1;
+      }
+      if (comparison) return comparison;
+      return Number(left.dataset.originalIndex) - Number(right.dataset.originalIndex);
+    });
+
+    let visible = 0;
+    rows.forEach(function(row) {
+      body.appendChild(row);
+      const values = [
+        row.dataset.device,
+        row.dataset.build,
+        row.dataset.os,
+        row.dataset.userAgent
+      ].map(normalizedMonitorValue);
+      const matches = !filterValue || values.some(function(value) {
+        return value.includes(filterValue);
+      });
+      row.hidden = !matches;
+      if (matches) visible += 1;
+    });
+
+    const sectionId = table.dataset.sectionId;
+    const count = document.querySelector('[data-visible-count="' + sectionId + '"]');
+    const noMatch = document.querySelector('[data-no-match="' + sectionId + '"]');
+    if (count) count.textContent = visible + " of " + rows.length + " shown";
+    if (noMatch) noMatch.hidden = visible !== 0;
+  });
+
+  document.querySelectorAll("th[data-sort-key]").forEach(function(header) {
+    let value = "none";
+    if (header.dataset.sortKey === monitorState.sortKey) {
+      value = monitorState.direction === "desc" ? "descending" : "ascending";
+    }
+    header.setAttribute("aria-sort", value);
+  });
+
+  saveMonitorState(monitorState);
+}
+
+document.addEventListener("DOMContentLoaded", function() {
+  const filter = document.getElementById("monitor-filter");
+  filter.value = monitorState.filter;
+  filter.addEventListener("input", function() {
+    monitorState.filter = filter.value;
+    applyMonitorControls();
+  });
+
+  document.querySelectorAll("button[data-sort-key]").forEach(function(button) {
+    button.addEventListener("click", function() {
+      const key = button.dataset.sortKey;
+      if (monitorState.sortKey === key) {
+        monitorState.direction = monitorState.direction === "asc" ? "desc" : "asc";
+      } else {
+        monitorState.sortKey = key;
+        monitorState.direction = "asc";
+      }
+      applyMonitorControls();
+    });
+  });
+
+  applyMonitorControls();
+});
+</script>
 </body>
 </html>"""
 
