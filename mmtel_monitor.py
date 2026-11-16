@@ -96,8 +96,13 @@ def _split_device_and_android(value: str) -> tuple[str, str]:
 def parse_device_metadata(user_agent: str | None) -> dict[str, str]:
     """Extract build details and add exact catalog metadata when known."""
     ua = (user_agent or "").strip()
-    inferred = get_android_version(ua)
-    model, android_version = _split_device_and_android(inferred)
+    apple = re.search(r"\biOS/(\d+(?:\.\d+)*)\s+iPhone\b", ua, re.IGNORECASE)
+    if apple:
+        model = "Apple iPhone"
+        os_version = f"iOS {apple.group(1)}"
+    else:
+        inferred = get_android_version(ua)
+        model, os_version = _split_device_and_android(inferred)
     build_number = ""
     security = ""
     release_date = ""
@@ -115,7 +120,7 @@ def parse_device_metadata(user_agent: str | None) -> dict[str, str]:
             model = f"SM-{model_code}"
         catalog = SAMSUNG_FIRMWARE.get(build_number)
         if catalog:
-            android_version, release_date, patch_level = catalog
+            os_version, release_date, patch_level = catalog
         build_kind = build_number[len(model_code) + 2:len(model_code) + 3]
         if build_kind == "S":
             security = "Security-only update"
@@ -137,7 +142,7 @@ def parse_device_metadata(user_agent: str | None) -> dict[str, str]:
     return {
         "model": model,
         "build_number": build_number,
-        "android_version": android_version,
+        "os_version": os_version,
         "security": security,
         "fw_release_date": release_date,
         "security_patch_level": patch_level,
