@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from flask import Flask, request, render_template_string, jsonify
 import logging
 import re
@@ -9,9 +11,15 @@ import urllib.request
 import subprocess
 import os
 import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import duckdb
 from ua_mappings import get_android_version
 from cell_location import decode_eutran_cell
+from mmtel_monitor import (
+    MonitorCache,
+    build_monitor_report,
+    parse_ucn_subscriber_lines,
+)
 from registration_history import pair_successful_registrations
 from time_display import format_utc_text_as_zurich, format_zurich_datetime
 
@@ -53,6 +61,8 @@ UCN_HOSTNAMES = {
     for pair in os.environ.get("UCN_HOSTNAMES", "").split(",")
     if ":" in pair
 }
+
+_mmtel_monitor_cache = MonitorCache(ttl_seconds=300)
 
 UA_EXCLUDE = re.compile(r"YATE|OpenSIPS|dispatcher|nx-sbc-ocs|NexSBC|VoLTE/WFC", re.IGNORECASE)
 _google_cache: dict = {}
@@ -110,6 +120,22 @@ _UCN_SCRIPT = (
     " con.close()\n"
     "except Exception as e:\n"
     " print(json.dumps({\"error\":str(e)}))\n"
+)
+
+_UCN_SUBSCRIBER_MAP_SCRIPT = (
+    "import sqlite3,json,sys\n"
+    "DB=sys.argv[1]\n"
+    "try:\n"
+    " con=sqlite3.connect('file:'+DB+'?mode=ro',uri=True)\n"
+    " sql=\"\"\"SELECT COALESCE(NULLIF(imsi,''),imsi_detected),msisdn "
+    "FROM cs_core WHERE msisdn IS NOT NULL "
+    "AND COALESCE(NULLIF(imsi,''),imsi_detected) IS NOT NULL\"\"\"\n"
+    " for imsi,msisdn in con.execute(sql):\n"
+    "  print(json.dumps({'imsi':imsi,'msisdn':msisdn},separators=(',',':')))\n"
+    " con.close()\n"
+    "except Exception as e:\n"
+    " print(json.dumps({'error':str(e)},separators=(',',':')))\n"
+    " sys.exit(1)\n"
 )
 
 
@@ -692,6 +718,184 @@ def reg_lookup(msisdn: str, days: int = 7) -> list:
     out.sort(key=lambda x: x["create_date"], reverse=True)
     return _add_gaps_and_classify(out)
 
+
+def _query_latest_successful_registrations() -> list[dict]:
+    """Return the latest successful, non-deregister REGISTER per IMSI."""
+    sql = """
+        WITH registration_rows AS MATERIALIZED (
+            SELECT timestamp, session_id, aor, user_agent,
+                   expires, contact, payload
+            FROM homer_lake.main.hep_proto_1_registration
+            WHERE timestamp >= NOW() - INTERVAL '24 hours'
+        ),
+        requests AS (
+            SELECT *
+            FROM registration_rows
+            WHERE starts_with(ltrim(payload), 'REGISTER ')
+        ),
+        responses AS (
+            SELECT *
+            FROM registration_rows
+            WHERE starts_with(ltrim(payload), 'SIP/2.0 200')
+              AND regexp_matches(
+                    payload,
+                    '(?im)^CSeq\\s*:\\s*[0-9]+\\s+REGISTER\\s*$'
+                  )
+        ),
+        paired AS (
+            SELECT
+                response.timestamp AS response_timestamp,
+                request.timestamp AS request_timestamp,
+                request.aor AS request_aor,
+                request.user_agent AS request_user_agent,
+                request.expires AS request_expires,
+                request.contact AS request_contact,
+                request.payload AS request_payload
+            FROM responses AS response
+            INNER JOIN requests AS request
+                ON request.session_id = response.session_id
+               AND request.timestamp <= response.timestamp
+               AND request.timestamp >= response.timestamp - INTERVAL '10 seconds'
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY response.session_id, response.timestamp
+                ORDER BY request.timestamp DESC
+            ) = 1
+        ),
+        decoded AS (
+            SELECT
+                response_timestamp AS timestamp,
+                regexp_extract(
+                    COALESCE(NULLIF(request_aor, ''), request_payload),
+                    '([0-9]{14,16})',
+                    1
+                ) AS imsi,
+                COALESCE(
+                    NULLIF(request_user_agent, ''),
+                    regexp_extract(
+                        request_payload,
+                        '(?im)^User-Agent\\s*:\\s*([^\\r\\n]+)',
+                        1
+                    )
+                ) AS user_agent,
+                COALESCE(
+                    NULLIF(request_contact, ''),
+                    regexp_extract(
+                        request_payload,
+                        '(?im)^(?:Contact|m)\\s*:\\s*([^\\r\\n]+)',
+                        1
+                    )
+                ) AS contact,
+                request_expires,
+                request_payload
+            FROM paired
+        ),
+        with_expiry AS (
+            SELECT *,
+                COALESCE(
+                    try_cast(request_expires AS BIGINT),
+                    try_cast(
+                        regexp_extract(
+                            request_payload,
+                            '(?im)^Expires\\s*:\\s*([0-9]+)',
+                            1
+                        ) AS BIGINT
+                    ),
+                    try_cast(
+                        regexp_extract(
+                            contact,
+                            '(?i)(?:^|;)\\s*expires\\s*=\\s*([0-9]+)',
+                            1
+                        ) AS BIGINT
+                    ),
+                    1
+                ) AS expires_value
+            FROM decoded
+        ),
+        latest AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY imsi ORDER BY timestamp DESC
+            ) AS imsi_rank
+            FROM with_expiry
+            WHERE imsi <> '' AND expires_value > 0
+        )
+        SELECT timestamp, imsi, user_agent, contact,
+               expires_value AS expires, request_payload AS payload
+        FROM latest
+        WHERE imsi_rank = 1
+        ORDER BY timestamp DESC
+    """
+    con = _get_duck()
+    try:
+        rows = con.execute(sql).fetchall()
+    finally:
+        con.close()
+    columns = ["timestamp", "imsi", "user_agent", "contact", "expires", "payload"]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def _ucn_subscriber_map_from_node(node: str) -> dict[str, str]:
+    result = subprocess.run(
+        [
+            "ssh",
+            "-o", "ConnectTimeout=4",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "BatchMode=yes",
+            f"{UCN_USER}@{node}",
+            f"python3 - {UCN_DB}",
+        ],
+        input=_UCN_SUBSCRIBER_MAP_SCRIPT,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"ssh exited {result.returncode}")
+    return parse_ucn_subscriber_lines(result.stdout)
+
+
+def _bulk_ucn_subscriber_map() -> dict[str, str]:
+    if not UCN_NODES:
+        return {}
+    combined: dict[str, str] = {}
+    per_node: dict[str, dict[str, str]] = {}
+    workers = min(8, len(UCN_NODES))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        pending = {
+            executor.submit(_ucn_subscriber_map_from_node, node): node
+            for node in UCN_NODES
+        }
+        for future in as_completed(pending):
+            node = pending[future]
+            try:
+                per_node[node] = future.result()
+            except Exception as exc:
+                log.warning("UCN bulk subscriber map failed node=%s: %s", node, exc)
+    for node in UCN_NODES:
+        for imsi, msisdn in per_node.get(node, {}).items():
+            combined.setdefault(imsi, msisdn)
+    return combined
+
+
+def _load_mmtel_monitor_report() -> dict:
+    started = time.monotonic()
+    registrations = _query_latest_successful_registrations()
+    subscribers = _bulk_ucn_subscriber_map()
+    report = build_monitor_report(registrations, subscribers)
+    report["generated_at"] = format_zurich_datetime(
+        datetime.datetime.now(datetime.timezone.utc)
+    )
+    report["registration_count"] = len(registrations)
+    report["duration_seconds"] = time.monotonic() - started
+    log.info(
+        "MMTEL monitor refreshed: %d latest registrations, "
+        "%d missing, %d unverifiable in %.3fs",
+        len(registrations),
+        len(report["missing_mmtel"]),
+        len(report["unable_to_verify"]),
+        report["duration_seconds"],
+    )
+    return report
+
 HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -706,6 +910,10 @@ HTML = """<!doctype html>
 body{font-family:var(--font);background:var(--bg);color:var(--text);
      font-size:15px;line-height:1.5;padding:1.5rem 1rem}
 h1{font-size:1.4rem;font-weight:700;color:var(--pri);margin-bottom:1rem}
+.tabs{display:flex;gap:.4rem;margin:-.35rem 0 1rem}
+.tabs a{padding:.35rem .7rem;border:1px solid var(--bd);border-radius:var(--r);
+        color:var(--pri);text-decoration:none;background:var(--surf);font-size:.88rem}
+.tabs a.active{background:var(--pri);color:#fff;border-color:var(--pri)}
 h2{font-size:1.05rem;font-weight:600;margin:1.5rem 0 .5rem;border-bottom:2px solid var(--pri);
    padding-bottom:.25rem;color:#222}
 form{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1.5rem;align-items:center}
@@ -752,6 +960,10 @@ details[open] summary{margin-bottom:.4rem}
 </head>
 <body>
 <h1>📡 UA &amp; Registration Lookup</h1>
+<nav class="tabs" aria-label="UA Lookup pages">
+  <a class="active" href="/">Subscriber lookup</a>
+  <a href="/mmtel-monitor">Missing MMTEL (24h)</a>
+</nav>
 <form method="get" action="/">
   <input type="text" name="q" value="{{ query|e }}"
          placeholder="MSISDN or IMSI" required autocomplete="off">
@@ -913,6 +1125,131 @@ details[open] summary{margin-bottom:.4rem}
   </p>
 </details>
 
+{% endif %}
+</body>
+</html>"""
+
+
+MMTEL_MONITOR_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="300">
+<title>Missing MMTEL registrations — UA Lookup</title>
+<style>
+:root{--bg:#f7f6f2;--surf:#fff;--bd:#ddd;--text:#1a1a1a;--muted:#666;
+      --pri:#01696f;--prih:#0c4e54;--danger:#9b2c2c;--warn:#8a5800;--r:6px;
+      --font:system-ui,-apple-system,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--bg);color:var(--text);
+     font-size:15px;line-height:1.45;padding:1.5rem 1rem}
+h1{font-size:1.4rem;color:var(--pri);margin-bottom:1rem}
+h2{font-size:1.05rem;margin:1.4rem 0 .5rem;border-bottom:2px solid var(--pri);
+   padding-bottom:.25rem}
+.tabs{display:flex;gap:.4rem;margin:-.35rem 0 1rem}
+.tabs a,.refresh{padding:.35rem .7rem;border:1px solid var(--bd);border-radius:var(--r);
+                 color:var(--pri);text-decoration:none;background:var(--surf);font-size:.88rem}
+.tabs a.active{background:var(--pri);color:#fff;border-color:var(--pri)}
+.summary{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem;
+         color:var(--muted);font-size:.88rem}
+.count{padding:.18rem .55rem;border-radius:20px;background:#fbe4e4;color:var(--danger);
+       font-weight:650}
+.unknown{background:#fff3cd;color:var(--warn)}
+.note,.error{padding:.65rem .8rem;border:1px solid var(--bd);border-radius:var(--r);
+             background:var(--surf);margin:.7rem 0;font-size:.88rem}
+.error{border-color:#e6a8a8;color:var(--danger);background:#fff1f1}
+.table-wrap{overflow-x:auto;background:var(--surf);border:1px solid var(--bd);
+            border-radius:var(--r)}
+table{border-collapse:collapse;width:100%;font-size:.8rem}
+th{background:var(--pri);color:#fff;text-align:left;padding:.45rem .55rem;
+   white-space:nowrap;font-weight:600}
+td{padding:.42rem .55rem;border-bottom:1px solid var(--bd);vertical-align:top}
+tr:last-child td{border-bottom:0}tr:hover td{background:#f0f8f8}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}
+.ua{min-width:250px;overflow-wrap:anywhere}.muted{color:var(--muted)}
+details summary{cursor:pointer;color:var(--pri)}
+details code{display:block;max-width:520px;white-space:normal;overflow-wrap:anywhere;
+             color:#444;margin-top:.25rem}
+@media(max-width:768px){body{padding:1rem .5rem}table{font-size:.74rem}
+  th,td{padding:.35rem}.tabs{overflow-x:auto}.tabs a{white-space:nowrap}}
+</style>
+</head>
+<body>
+<h1>📵 Missing MMTEL registrations</h1>
+<nav class="tabs" aria-label="UA Lookup pages">
+  <a href="/">Subscriber lookup</a>
+  <a class="active" href="/mmtel-monitor">Missing MMTEL (24h)</a>
+</nav>
+
+{% if error %}<div class="error">⚠ Monitor refresh failed: {{ error }}</div>{% endif %}
+
+<div class="summary">
+  <span class="count">{{ report.missing_mmtel|length }} confirmed missing</span>
+  <span class="count unknown">{{ report.unable_to_verify|length }} unable to verify</span>
+  {% if report.generated_at %}<span>Generated {{ report.generated_at }}</span>{% endif %}
+  {% if report.duration_seconds is defined %}
+    <span>in {{ "%.2f"|format(report.duration_seconds) }} s</span>
+  {% endif %}
+  <span>Auto-refresh: 5 minutes</span>
+  <a class="refresh" href="/mmtel-monitor">Reload page</a>
+</div>
+
+<div class="note">
+  One row per IMSI, using its latest successful, non-deregister REGISTER in the
+  last 24 hours. MMTEL is checked only in the device REGISTER Contact header.
+  MSISDN comes from the current UCN mapping and may be unavailable for an older
+  or already-moved registration. Firmware fields show an em dash when no exact
+  catalog match is available.
+</div>
+
+{% macro device_table(rows) -%}
+<div class="table-wrap">
+<table>
+  <thead><tr>
+    <th>Last REGISTER (Zurich)</th><th>MSISDN</th><th>IMSI</th><th>Device</th>
+    <th>Build number</th><th>Android version</th><th>Security</th>
+    <th>Firmware release</th><th>Security patch level</th><th>User-Agent</th>
+    <th>Contact evidence</th>
+  </tr></thead>
+  <tbody>
+  {% for row in rows %}
+  <tr>
+    <td class="mono">{{ row.timestamp_zurich }}</td>
+    <td class="mono">{{ row.msisdn or "—" }}</td>
+    <td class="mono">{{ row.imsi }}</td>
+    <td>{{ row.model or "—" }}</td>
+    <td class="mono">{{ row.build_number or "—" }}</td>
+    <td>{{ row.android_version or "—" }}</td>
+    <td>{{ row.security or "—" }}</td>
+    <td class="mono">{{ row.fw_release_date or "—" }}</td>
+    <td class="mono">{{ row.security_patch_level or "—" }}</td>
+    <td class="ua">{{ row.user_agent or "—" }}</td>
+    <td>{% if row.contact %}<details><summary>Show Contact</summary>
+      <code>{{ row.contact }}</code></details>{% else %}<span class="muted">—</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{%- endmacro %}
+
+<h2>Confirmed missing MMTEL</h2>
+{% if report.missing_mmtel %}
+  {{ device_table(report.missing_mmtel) }}
+{% else %}
+  <p class="note">No latest registration was confirmed without MMTEL.</p>
+{% endif %}
+
+<h2>Unable to verify</h2>
+<p class="muted" style="font-size:.86rem;margin-bottom:.45rem">
+  These successful registrations had no usable device Contact header. They are
+  not counted as confirmed missing MMTEL.
+</p>
+{% if report.unable_to_verify %}
+  {{ device_table(report.unable_to_verify) }}
+{% else %}
+  <p class="note">Every latest registration had a usable Contact header.</p>
 {% endif %}
 </body>
 </html>"""
@@ -1587,6 +1924,29 @@ def index():
     return render_template_string(HTML, query=query, days=days, error=error,
                                   reg_rows=reg_rows, device_row=device_row,
                                   vlr=vlr, bearer_rows=bearer_rows)
+
+
+@app.route('/mmtel-monitor')
+def mmtel_monitor_page():
+    empty_report = {
+        "missing_mmtel": [],
+        "unable_to_verify": [],
+        "generated_at": "",
+    }
+    try:
+        report = _mmtel_monitor_cache.get(
+            _load_mmtel_monitor_report,
+        )
+        error = None
+    except Exception as exc:
+        log.exception("MMTEL monitor refresh failed")
+        report = empty_report
+        error = str(exc)
+    return render_template_string(
+        MMTEL_MONITOR_HTML,
+        report=report,
+        error=error,
+    )
 
 @app.route("/health")
 def health():
