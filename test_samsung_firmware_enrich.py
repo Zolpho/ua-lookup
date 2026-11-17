@@ -14,6 +14,7 @@ from samsung_firmware_enrich import (
     exclusive_lock,
     main,
     parse_csc_candidates,
+    resolve_official_document_url,
     run_enrichment,
     unknown_problem_identities,
 )
@@ -22,6 +23,18 @@ from samsung_firmware_enrich import (
 IDENTITY = SamsungIdentity("SM-A165F", "SM-A165F", "A165FXXUBEZJ7")
 SOURCE = "https://doc.samsungmobile.com/SM-A165F/031857241225/roh.html"
 NOW = datetime.datetime(2026, 11, 17, 10, 0, tzinfo=datetime.timezone.utc)
+SHELL = "https://doc.samsungmobile.com/SM-A165F/EUX/doc.html"
+DOCUMENT = "https://doc.samsungmobile.com/SM-A165F/031841241223/eng.html"
+SHELL_HTML = """
+<html><body>
+  <input type="hidden" id="dflt_page"
+         value="../../SM-A165F/031841241223/eng.html">
+  <select id="sel_lang">
+    <option value="../../SM-A165F/031841241223/deu.html">Deutsch</option>
+    <option value="../../SM-A165F/031841241223/eng.html">English</option>
+  </select>
+</body></html>
+"""
 
 
 def verified_record(identity=IDENTITY):
@@ -74,6 +87,34 @@ class OfficialCandidateTests(unittest.TestCase):
 
         refresh.assert_not_called()
         load_identities.assert_not_called()
+
+    def test_resolves_exact_same_model_english_document_from_shell(self):
+        self.assertEqual(
+            resolve_official_document_url(
+                IDENTITY,
+                SHELL,
+                fetcher=lambda _url: (SHELL_HTML, SHELL),
+            ),
+            DOCUMENT,
+        )
+
+    def test_rejects_shell_document_for_another_model(self):
+        wrong_model_html = SHELL_HTML.replace("SM-A165F", "SM-S936B")
+
+        with self.assertRaisesRegex(ValueError, "model"):
+            resolve_official_document_url(
+                IDENTITY,
+                SHELL,
+                fetcher=lambda _url: (wrong_model_html, SHELL),
+            )
+
+    def test_rejects_shell_without_an_official_english_document(self):
+        with self.assertRaisesRegex(ValueError, "English document"):
+            resolve_official_document_url(
+                IDENTITY,
+                SHELL,
+                fetcher=lambda _url: ("<html>language selector</html>", SHELL),
+            )
 
 
 class IdentitySelectionTests(unittest.TestCase):
@@ -164,6 +205,7 @@ class EnrichmentRunTests(unittest.TestCase):
                     "https://doc.samsungmobile.com/SM-A165F/wrong.html",
                     SOURCE,
                 ],
+                resolver=lambda _identity, url: url,
                 importer=importer,
                 now=NOW,
             )
@@ -192,6 +234,7 @@ class EnrichmentRunTests(unittest.TestCase):
                 state_path,
                 csc_candidates=("EUX",),
                 candidate_builder=candidate_builder,
+                resolver=lambda _identity, url: url,
                 importer=lambda identity, _url: verified_record(identity),
                 now=NOW,
             )
@@ -212,6 +255,7 @@ class EnrichmentRunTests(unittest.TestCase):
                 [IDENTITY],
                 Path(directory) / "state.json",
                 csc_candidates=("EUX", "AUT"),
+                resolver=lambda _identity, url: url,
                 importer=missing_page,
                 now=NOW,
             )
@@ -232,6 +276,7 @@ class EnrichmentRunTests(unittest.TestCase):
                 Path(directory) / "state.json",
                 csc_candidates=("EUX",),
                 candidate_builder=lambda _identity, _cscs: [],
+                resolver=lambda _identity, url: url,
                 importer=lambda _identity, _url: None,
                 now=NOW,
                 max_identities=5,
@@ -239,6 +284,27 @@ class EnrichmentRunTests(unittest.TestCase):
 
         self.assertEqual(summary["attempted"], 5)
         self.assertEqual(summary["not_found"], 5)
+
+    def test_resolves_shell_before_exact_import(self):
+        visited = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary = run_enrichment(
+                [IDENTITY],
+                Path(directory) / "state.json",
+                csc_candidates=("EUX",),
+                candidate_builder=lambda _identity, _cscs: [SHELL],
+                resolver=lambda _identity, url: (
+                    DOCUMENT if url == SHELL else self.fail("unexpected shell")
+                ),
+                importer=lambda _identity, url: (
+                    visited.append(url) or verified_record()
+                ),
+                now=NOW,
+            )
+
+        self.assertEqual(visited, [DOCUMENT])
+        self.assertEqual(summary["verified"], 1)
 
 
 if __name__ == "__main__":

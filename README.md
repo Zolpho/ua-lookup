@@ -361,10 +361,12 @@ contacts any external service.
 
 #### Automatic Samsung enrichment
 
-`samsung_firmware_enrich.py` probes Samsung's predictable official document
-path for unknown builds shown by the missing-MMTEL monitor. It does not use a
+`samsung_firmware_enrich.py` probes Samsung's predictable official model/CSC
+selector page for unknown builds shown by the missing-MMTEL monitor. The worker
+extracts the same-model English document URL embedded by Samsung, validates its
+versioned path, then applies the exact firmware matcher. It does not use a
 search provider, an LLM, or an additional API key. Metadata is committed only
-when the official Samsung page contains an exact match for both the complete
+when the resolved official page contains an exact match for both the complete
 model code and complete firmware build number.
 
 Optional limits (shown with their defaults):
