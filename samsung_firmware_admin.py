@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
-from samsung_firmware import FirmwareRecord
+from samsung_firmware import FirmwareRecord, SamsungIdentity
 
 
 DEFAULT_CACHE_PATH = Path(
@@ -231,6 +231,41 @@ def import_official_url(
         {"schema_version": 1, "sources": sources},
     )
     return len(imported)
+
+
+def import_exact_official_url(
+    identity: SamsungIdentity,
+    url: str,
+    catalog_path: Path = DEFAULT_CACHE_PATH,
+    sources_path: Path = DEFAULT_SOURCES_PATH,
+    fetcher: Callable[[str], tuple[str, str]] = fetch_samsung_page,
+    verified_at: str | None = None,
+) -> FirmwareRecord:
+    """Import one record only after an exact official model/build match."""
+    normalized = validate_samsung_url(url)
+    html, final_url = fetcher(normalized)
+    timestamp = verified_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    records = parse_samsung_page(html, final_url, timestamp)
+    requested_key = (identity.model_code.upper(), identity.build_number.upper())
+    matched = next(
+        (
+            record
+            for record in records
+            if (record.model_code, record.build_number) == requested_key
+        ),
+        None,
+    )
+    if matched is None:
+        raise ValueError("Samsung page has no exact model/build match")
+
+    existing = _load_runtime_records(catalog_path)
+    write_catalog_atomically(catalog_path, [*existing, matched])
+    sources = sorted(set([*_load_sources(sources_path), final_url]))
+    _write_json_atomically(
+        sources_path,
+        {"schema_version": 1, "sources": sources},
+    )
+    return matched
 
 
 def refresh_registered_sources(

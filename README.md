@@ -357,7 +357,56 @@ refreshed later:
 Runtime records and their source registry are stored in
 `/var/lib/ua-lookup/samsung-firmware-cache.json` and
 `/var/lib/ua-lookup/samsung-firmware-sources.json`. Page rendering never
-contacts Samsung or Google.
+contacts any external service.
+
+#### Automatic Samsung enrichment
+
+`samsung_firmware_enrich.py` probes Samsung's predictable official document
+path for unknown builds shown by the missing-MMTEL monitor. It does not use a
+search provider, an LLM, or an additional API key. Metadata is committed only
+when the official Samsung page contains an exact match for both the complete
+model code and complete firmware build number.
+
+Optional limits (shown with their defaults):
+
+```ini
+SAMSUNG_CSC_CANDIDATES=EUX,AUT,SWC
+SAMSUNG_ENRICH_MAX_IDENTITIES=5
+SAMSUNG_ENRICH_NOT_FOUND_RETRY_HOURS=24
+SAMSUNG_ENRICH_ERROR_RETRY_HOURS=6
+```
+
+`SAMSUNG_CSC_CANDIDATES` is a comma-separated, ordered list of three-character
+Samsung sales/region codes observed in the operator population. Add another
+CSC when an unresolved device is known to use it; invalid values and lists
+longer than 16 entries are rejected before any network request.
+
+Install the one-shot service and persistent six-hour timer:
+
+```bash
+install -m 0644 ua-lookup-samsung-enrichment.service \
+  /etc/systemd/system/ua-lookup-samsung-enrichment.service
+install -m 0644 ua-lookup-samsung-enrichment.timer \
+  /etc/systemd/system/ua-lookup-samsung-enrichment.timer
+systemctl daemon-reload
+systemctl start ua-lookup-samsung-enrichment.service
+systemctl enable --now ua-lookup-samsung-enrichment.timer
+```
+
+Verify the last run and next scheduled run:
+
+```bash
+systemctl status ua-lookup-samsung-enrichment.service --no-pager
+systemctl list-timers ua-lookup-samsung-enrichment.timer --no-pager
+journalctl -u ua-lookup-samsung-enrichment.service -n 100 --no-pager
+```
+
+The worker processes newest problem registrations first, probes at most five
+eligible identities per run by default, and stores only model/build retry
+metadata in `/var/lib/ua-lookup/samsung-firmware-enrichment-state.json`. For
+each identity it tries the configured official CSC pages in order. A file lock
+prevents overlapping runs. Existing verified records remain untouched when
+Samsung, parsing, or exact-match validation fails.
 
 ### Xiaomi / Redmi / POCO (HyperOS)
 

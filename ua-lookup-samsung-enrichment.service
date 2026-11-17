@@ -1,0 +1,19 @@
+[Unit]
+Description=UA Lookup - Samsung firmware enrichment
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/ua-lookup
+EnvironmentFile=/opt/ua-lookup/config.env
+ExecStart=/opt/ua-lookup/venv/bin/python /opt/ua-lookup/samsung_firmware_enrich.py
+UMask=0027
+StateDirectory=ua-lookup
+StateDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/ua-lookup /var/log

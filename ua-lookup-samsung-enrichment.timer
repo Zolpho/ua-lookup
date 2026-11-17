@@ -1,0 +1,13 @@
+[Unit]
+Description=Run UA Lookup Samsung firmware enrichment every six hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+AccuracySec=1min
+Persistent=true
+Unit=ua-lookup-samsung-enrichment.service
+
+[Install]
+WantedBy=timers.target
