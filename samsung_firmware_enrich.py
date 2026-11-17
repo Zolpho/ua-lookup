@@ -7,8 +7,8 @@ import fcntl
 import json
 import logging
 import os
-import urllib.parse
-import urllib.request
+import re
+import urllib.error
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
@@ -31,7 +31,8 @@ from samsung_firmware_admin import (
 
 log = logging.getLogger(__name__)
 
-BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+DEFAULT_CSC_CANDIDATES = "EUX,AUT,SWC"
+MAX_CSC_CANDIDATES = 16
 DEFAULT_STATE_PATH = Path(
     os.environ.get(
         "SAMSUNG_ENRICH_STATE",
@@ -46,71 +47,45 @@ DEFAULT_LOCK_PATH = Path(
 )
 
 
-def build_search_query(identity: SamsungIdentity) -> str:
-    return (
-        f'site:doc.samsungmobile.com "{identity.model_code}" '
-        f'"{identity.build_number}"'
-    )
-
-
-def search_official_urls(
-    identity: SamsungIdentity,
-    api_key: str,
-    opener: Callable | None = None,
-    timeout_seconds: float = 10,
-    max_bytes: int = 1_000_000,
-) -> list[str]:
-    """Return untrusted official-domain candidates for one exact identity."""
-    if not str(api_key or "").strip():
-        raise ValueError("BRAVE_SEARCH_API_KEY is required")
-    parameters = urllib.parse.urlencode(
-        {
-            "q": build_search_query(identity),
-            "count": 5,
-            "country": "CH",
-            "search_lang": "en",
-            "spellcheck": 0,
-        }
-    )
-    request = urllib.request.Request(
-        f"{BRAVE_SEARCH_ENDPOINT}?{parameters}",
-        headers={
-            "Accept": "application/json",
-            "X-Subscription-Token": str(api_key).strip(),
-            "User-Agent": "ua-lookup-samsung-enrichment/1.0",
-        },
-    )
-    if opener is None:
-        opener = lambda req, timeout: urllib.request.urlopen(req, timeout=timeout)
-    with opener(request, timeout_seconds) as response:
-        body = response.read(max_bytes + 1)
-    if len(body) > max_bytes:
-        raise ValueError("Brave Search response is too large")
-    payload = json.loads(body.decode("utf-8"))
-    results = payload.get("web", {}).get("results", [])
-    if not isinstance(results, list):
-        raise ValueError("Brave Search response has invalid results")
-
+def parse_csc_candidates(
+    value: str = DEFAULT_CSC_CANDIDATES,
+) -> tuple[str, ...]:
+    """Validate and normalize the bounded Samsung CSC probe list."""
     candidates: list[str] = []
     seen: set[str] = set()
-    for result in results:
-        if not isinstance(result, dict):
+    for raw_candidate in str(value or "").split(","):
+        candidate = raw_candidate.strip().upper()
+        if not candidate:
             continue
-        try:
-            candidate = validate_samsung_url(result.get("url", ""))
-        except ValueError:
-            continue
-        parts = [
-            part
-            for part in urllib.parse.urlsplit(candidate).path.split("/")
-            if part
-        ]
-        if not parts or parts[0].upper() != identity.model_code.upper():
-            continue
+        if not re.fullmatch(r"[A-Z0-9]{3}", candidate):
+            raise ValueError(f"invalid Samsung CSC candidate: {raw_candidate!r}")
         if candidate not in seen:
             seen.add(candidate)
             candidates.append(candidate)
-    return candidates
+    if not candidates:
+        raise ValueError("at least one Samsung CSC candidate is required")
+    if len(candidates) > MAX_CSC_CANDIDATES:
+        raise ValueError(
+            f"at most {MAX_CSC_CANDIDATES} Samsung CSC candidates are allowed"
+        )
+    return tuple(candidates)
+
+
+def build_official_urls(
+    identity: SamsungIdentity,
+    csc_candidates: Iterable[str],
+) -> list[str]:
+    """Build validated official Samsung document URLs without web search."""
+    normalized_cscs = parse_csc_candidates(
+        ",".join(str(candidate) for candidate in csc_candidates)
+    )
+    return [
+        validate_samsung_url(
+            "https://doc.samsungmobile.com/"
+            f"{identity.model_code.upper()}/{csc}/doc.html"
+        )
+        for csc in normalized_cscs
+    ]
 
 
 def unknown_problem_identities(
@@ -195,14 +170,16 @@ def eligible_identities(
 
 def run_enrichment(
     identities: Iterable[SamsungIdentity],
-    api_key: str,
     state_path: Path = DEFAULT_STATE_PATH,
-    searcher: Callable[[SamsungIdentity, str], list[str]] = search_official_urls,
+    csc_candidates: tuple[str, ...] = parse_csc_candidates(),
+    candidate_builder: Callable[
+        [SamsungIdentity, Iterable[str]], list[str]
+    ] = build_official_urls,
     importer: Callable[
         [SamsungIdentity, str], FirmwareRecord
     ] = import_exact_official_url,
     now: datetime.datetime | None = None,
-    max_searches: int = 10,
+    max_identities: int = 5,
     not_found_retry_hours: int = 24,
     error_retry_hours: int = 6,
 ) -> dict[str, int]:
@@ -214,7 +191,7 @@ def run_enrichment(
         now,
         not_found_retry_hours,
         error_retry_hours,
-    )[:max(0, max_searches)]
+    )[:max(0, max_identities)]
     summary = {"attempted": 0, "verified": 0, "not_found": 0, "errors": 0}
     attempts = state["attempts"]
 
@@ -223,10 +200,10 @@ def run_enrichment(
         key = _identity_key(identity)
         status = "not_found"
         try:
-            candidates = searcher(identity, api_key)
+            candidates = candidate_builder(identity, csc_candidates)
         except Exception as exc:
             log.warning(
-                "Samsung discovery failed for %s %s: %s",
+                "Samsung candidate generation failed for %s %s: %s",
                 identity.model_code,
                 identity.build_number,
                 exc,
@@ -237,6 +214,23 @@ def run_enrichment(
         for candidate in candidates:
             try:
                 importer(identity, candidate)
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {404, 410}:
+                    log.warning(
+                        "Samsung candidate failed for %s %s: %s",
+                        identity.model_code,
+                        identity.build_number,
+                        exc,
+                    )
+                    status = "error"
+                else:
+                    log.info(
+                        "Samsung CSC page absent for %s %s: %s",
+                        identity.model_code,
+                        identity.build_number,
+                        candidate,
+                    )
+                continue
             except ValueError as exc:
                 log.info(
                     "Samsung candidate rejected for %s %s: %s",
@@ -306,9 +300,17 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    api_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
-    if not api_key:
-        log.error("BRAVE_SEARCH_API_KEY is required")
+    try:
+        csc_candidates = parse_csc_candidates(
+            os.environ.get("SAMSUNG_CSC_CANDIDATES", DEFAULT_CSC_CANDIDATES)
+        )
+        max_identities = _positive_int("SAMSUNG_ENRICH_MAX_IDENTITIES", 5)
+        not_found_retry_hours = _positive_int(
+            "SAMSUNG_ENRICH_NOT_FOUND_RETRY_HOURS", 24
+        )
+        error_retry_hours = _positive_int("SAMSUNG_ENRICH_ERROR_RETRY_HOURS", 6)
+    except ValueError as exc:
+        log.error("Invalid Samsung enrichment configuration: %s", exc)
         return 2
     try:
         with exclusive_lock():
@@ -320,12 +322,10 @@ def main() -> int:
             identities = load_unknown_problem_identities()
             summary = run_enrichment(
                 identities,
-                api_key,
-                max_searches=_positive_int("SAMSUNG_ENRICH_MAX_SEARCHES", 10),
-                not_found_retry_hours=_positive_int(
-                    "SAMSUNG_ENRICH_NOT_FOUND_RETRY_HOURS", 24
-                ),
-                error_retry_hours=_positive_int("SAMSUNG_ENRICH_ERROR_RETRY_HOURS", 6),
+                csc_candidates=csc_candidates,
+                max_identities=max_identities,
+                not_found_retry_hours=not_found_retry_hours,
+                error_retry_hours=error_retry_hours,
             )
     except BlockingIOError:
         log.info("Samsung enrichment is already running; skipping overlap")

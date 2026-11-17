@@ -1,16 +1,20 @@
 import datetime
 import json
+import os
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest import mock
 
 from samsung_firmware import FirmwareRecord, SamsungIdentity
 from samsung_firmware_enrich import (
-    build_search_query,
+    build_official_urls,
     eligible_identities,
     exclusive_lock,
+    main,
+    parse_csc_candidates,
     run_enrichment,
-    search_official_urls,
     unknown_problem_identities,
 )
 
@@ -18,20 +22,6 @@ from samsung_firmware_enrich import (
 IDENTITY = SamsungIdentity("SM-A165F", "SM-A165F", "A165FXXUBEZJ7")
 SOURCE = "https://doc.samsungmobile.com/SM-A165F/031857241225/roh.html"
 NOW = datetime.datetime(2026, 11, 17, 10, 0, tzinfo=datetime.timezone.utc)
-
-
-class FakeSearchResponse:
-    def __init__(self, payload):
-        self.body = json.dumps(payload).encode("utf-8")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        return False
-
-    def read(self, size=-1):
-        return self.body if size < 0 else self.body[:size]
 
 
 def verified_record(identity=IDENTITY):
@@ -47,52 +37,43 @@ def verified_record(identity=IDENTITY):
     )
 
 
-class BraveDiscoveryTests(unittest.TestCase):
-    def test_query_contains_exact_model_build_and_domain(self):
+class OfficialCandidateTests(unittest.TestCase):
+    def test_builds_only_official_model_csc_document_urls(self):
         self.assertEqual(
-            build_search_query(IDENTITY),
-            'site:doc.samsungmobile.com "SM-A165F" "A165FXXUBEZJ7"',
+            build_official_urls(IDENTITY, ("EUX", "AUT", "SWC")),
+            [
+                "https://doc.samsungmobile.com/SM-A165F/EUX/doc.html",
+                "https://doc.samsungmobile.com/SM-A165F/AUT/doc.html",
+                "https://doc.samsungmobile.com/SM-A165F/SWC/doc.html",
+            ],
         )
 
-    def test_search_returns_only_official_same_model_urls(self):
-        seen = {}
+    def test_url_builder_rejects_unvalidated_csc_input(self):
+        with self.assertRaisesRegex(ValueError, "CSC"):
+            build_official_urls(IDENTITY, ("EUX", "../XSG"))
 
-        def opener(request, timeout):
-            seen["request"] = request
-            seen["timeout"] = timeout
-            return FakeSearchResponse(
-                {
-                    "web": {
-                        "results": [
-                            {"url": SOURCE},
-                            {"url": "https://evil.example/SM-A165F/doc.html"},
-                            {
-                                "url": "https://doc.samsungmobile.com.evil.example/SM-A165F/doc.html"
-                            },
-                            {"url": "https://doc.samsungmobile.com/SM-S936B/EUX/doc.html"},
-                        ]
-                    }
-                }
-            )
+    def test_csc_candidates_are_normalized_deduplicated_and_bounded(self):
+        self.assertEqual(
+            parse_csc_candidates(" eux, AUT,swc,EUX "),
+            ("EUX", "AUT", "SWC"),
+        )
+        with self.assertRaisesRegex(ValueError, "CSC"):
+            parse_csc_candidates("EUX,../XSG")
+        with self.assertRaisesRegex(ValueError, "at most"):
+            parse_csc_candidates(",".join(f"X{index:02d}" for index in range(17)))
 
-        urls = search_official_urls(IDENTITY, "secret", opener=opener)
+    def test_main_rejects_invalid_csc_before_refresh_or_registration_query(self):
+        with mock.patch.dict(
+            os.environ, {"SAMSUNG_CSC_CANDIDATES": "EUX,../XSG"}
+        ), mock.patch(
+            "samsung_firmware_enrich.refresh_registered_sources"
+        ) as refresh, mock.patch(
+            "samsung_firmware_enrich.load_unknown_problem_identities"
+        ) as load_identities:
+            self.assertEqual(main(), 2)
 
-        self.assertEqual(urls, [SOURCE])
-        self.assertEqual(seen["request"].get_header("X-subscription-token"), "secret")
-        self.assertEqual(seen["timeout"], 10)
-
-    def test_search_rejects_oversized_response(self):
-        class OversizedResponse(FakeSearchResponse):
-            def __init__(self):
-                self.body = b"x" * 21
-
-        with self.assertRaisesRegex(ValueError, "large"):
-            search_official_urls(
-                IDENTITY,
-                "secret",
-                opener=lambda _request, _timeout: OversizedResponse(),
-                max_bytes=20,
-            )
+        refresh.assert_not_called()
+        load_identities.assert_not_called()
 
 
 class IdentitySelectionTests(unittest.TestCase):
@@ -177,9 +158,9 @@ class EnrichmentRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             summary = run_enrichment(
                 [IDENTITY],
-                "secret",
                 Path(directory) / "state.json",
-                searcher=lambda _identity, _key: [
+                csc_candidates=("EUX",),
+                candidate_builder=lambda _identity, _cscs: [
                     "https://doc.samsungmobile.com/SM-A165F/wrong.html",
                     SOURCE,
                 ],
@@ -199,18 +180,18 @@ class EnrichmentRunTests(unittest.TestCase):
     def test_failure_for_one_identity_does_not_stop_next(self):
         second = SamsungIdentity("SM-S936B", "Galaxy S25+", "S936BXXUDDZJB")
 
-        def searcher(identity, _key):
+        def candidate_builder(identity, _cscs):
             if identity == IDENTITY:
-                raise OSError("search unavailable")
+                raise OSError("candidate generation unavailable")
             return ["https://doc.samsungmobile.com/SM-S936B/XSG/doc.html"]
 
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "state.json"
             summary = run_enrichment(
                 [IDENTITY, second],
-                "secret",
                 state_path,
-                searcher=searcher,
+                csc_candidates=("EUX",),
+                candidate_builder=candidate_builder,
                 importer=lambda identity, _url: verified_record(identity),
                 now=NOW,
             )
@@ -222,7 +203,25 @@ class EnrichmentRunTests(unittest.TestCase):
         self.assertEqual(state["attempts"]["SM-A165F|A165FXXUBEZJ7"]["status"], "error")
         self.assertEqual(state["attempts"]["SM-S936B|S936BXXUDDZJB"]["status"], "verified")
 
-    def test_respects_per_run_search_limit(self):
+    def test_missing_csc_pages_are_recorded_as_not_found(self):
+        def missing_page(_identity, url):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary = run_enrichment(
+                [IDENTITY],
+                Path(directory) / "state.json",
+                csc_candidates=("EUX", "AUT"),
+                importer=missing_page,
+                now=NOW,
+            )
+
+        self.assertEqual(
+            summary,
+            {"attempted": 1, "verified": 0, "not_found": 1, "errors": 0},
+        )
+
+    def test_respects_per_run_identity_limit(self):
         identities = [
             SamsungIdentity("SM-A165F", "Galaxy A16", f"A165FBUILD{index}")
             for index in range(12)
@@ -230,16 +229,16 @@ class EnrichmentRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             summary = run_enrichment(
                 identities,
-                "secret",
                 Path(directory) / "state.json",
-                searcher=lambda _identity, _key: [],
+                csc_candidates=("EUX",),
+                candidate_builder=lambda _identity, _cscs: [],
                 importer=lambda _identity, _url: None,
                 now=NOW,
-                max_searches=10,
+                max_identities=5,
             )
 
-        self.assertEqual(summary["attempted"], 10)
-        self.assertEqual(summary["not_found"], 10)
+        self.assertEqual(summary["attempted"], 5)
+        self.assertEqual(summary["not_found"], 5)
 
 
 if __name__ == "__main__":

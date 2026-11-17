@@ -361,28 +361,25 @@ contacts any external service.
 
 #### Automatic Samsung enrichment
 
-`samsung_firmware_enrich.py` can discover official pages for unknown Samsung
-builds shown by the missing-MMTEL monitor. Discovery uses Brave Web Search,
-but a search result is only a URL candidate: metadata is committed only when
-the official Samsung page contains an exact match for both the complete model
-code and complete firmware build number.
-
-Create a dedicated Brave Search API key and add
-`BRAVE_SEARCH_API_KEY=<key>` to the protected service environment. Use an
-editor so the key is not placed in shell history:
-
-```bash
-${EDITOR:-nano} /opt/ua-lookup/config.env
-chmod 600 /opt/ua-lookup/config.env
-```
+`samsung_firmware_enrich.py` probes Samsung's predictable official document
+path for unknown builds shown by the missing-MMTEL monitor. It does not use a
+search provider, an LLM, or an additional API key. Metadata is committed only
+when the official Samsung page contains an exact match for both the complete
+model code and complete firmware build number.
 
 Optional limits (shown with their defaults):
 
 ```ini
-SAMSUNG_ENRICH_MAX_SEARCHES=10
+SAMSUNG_CSC_CANDIDATES=EUX,AUT,SWC
+SAMSUNG_ENRICH_MAX_IDENTITIES=5
 SAMSUNG_ENRICH_NOT_FOUND_RETRY_HOURS=24
 SAMSUNG_ENRICH_ERROR_RETRY_HOURS=6
 ```
+
+`SAMSUNG_CSC_CANDIDATES` is a comma-separated, ordered list of three-character
+Samsung sales/region codes observed in the operator population. Add another
+CSC when an unresolved device is known to use it; invalid values and lists
+longer than 16 entries are rejected before any network request.
 
 Install the one-shot service and persistent six-hour timer:
 
@@ -404,11 +401,12 @@ systemctl list-timers ua-lookup-samsung-enrichment.timer --no-pager
 journalctl -u ua-lookup-samsung-enrichment.service -n 100 --no-pager
 ```
 
-The worker processes newest problem registrations first, searches at most ten
-eligible identities per run by default, and stores only model/build retry metadata
-in `/var/lib/ua-lookup/samsung-firmware-enrichment-state.json`. A file lock
+The worker processes newest problem registrations first, probes at most five
+eligible identities per run by default, and stores only model/build retry
+metadata in `/var/lib/ua-lookup/samsung-firmware-enrichment-state.json`. For
+each identity it tries the configured official CSC pages in order. A file lock
 prevents overlapping runs. Existing verified records remain untouched when
-search, Samsung, parsing, or exact-match validation fails.
+Samsung, parsing, or exact-match validation fails.
 
 ### Xiaomi / Redmi / POCO (HyperOS)
 
