@@ -9,6 +9,7 @@ from unittest import mock
 from samsung_firmware_admin import (
     SamsungRedirectHandler,
     fetch_samsung_page,
+    import_exact_official_url,
     import_official_url,
     main,
     parse_samsung_page,
@@ -16,6 +17,7 @@ from samsung_firmware_admin import (
     validate_samsung_url,
     write_catalog_atomically,
 )
+from samsung_firmware import SamsungIdentity
 
 
 PAGE = """<!doctype html>
@@ -225,6 +227,56 @@ class SamsungCatalogWriteTests(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertEqual(sources, {"schema_version": 1, "sources": [SOURCE]})
         self.assertEqual(len(catalog["records"]), 2)
+
+    def test_exact_import_accepts_only_requested_model_and_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            catalog_path = Path(directory) / "catalog.json"
+            sources_path = Path(directory) / "sources.json"
+
+            record = import_exact_official_url(
+                SamsungIdentity("SM-A165F", "Galaxy A16", "A165FXXUBEZJ7"),
+                SOURCE,
+                catalog_path,
+                sources_path,
+                fetcher=lambda _url: (PAGE, SOURCE),
+                verified_at="2026-11-17T08:00:00+00:00",
+            )
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(record.model_code, "SM-A165F")
+        self.assertEqual(record.build_number, "A165FXXUBEZJ7")
+        self.assertEqual(len(catalog["records"]), 1)
+
+    def test_exact_import_rejects_missing_build_without_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            catalog_path = Path(directory) / "catalog.json"
+            sources_path = Path(directory) / "sources.json"
+            catalog_path.write_text("previous", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "exact model/build"):
+                import_exact_official_url(
+                    SamsungIdentity("SM-A165F", "Galaxy A16", "A165FXXUZZZZ9"),
+                    SOURCE,
+                    catalog_path,
+                    sources_path,
+                    fetcher=lambda _url: (PAGE, SOURCE),
+                    verified_at="2026-11-17T08:00:00+00:00",
+                )
+
+            self.assertEqual(catalog_path.read_text(encoding="utf-8"), "previous")
+            self.assertFalse(sources_path.exists())
+
+    def test_exact_import_rejects_requested_model_different_from_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "model"):
+                import_exact_official_url(
+                    SamsungIdentity("SM-S936B", "Galaxy S25+", "A165FXXUBEZJ7"),
+                    SOURCE,
+                    Path(directory) / "catalog.json",
+                    Path(directory) / "sources.json",
+                    fetcher=lambda _url: (PAGE, SOURCE),
+                    verified_at="2026-11-17T08:00:00+00:00",
+                )
 
     def test_refresh_uses_only_registered_sources(self):
         with tempfile.TemporaryDirectory() as directory:

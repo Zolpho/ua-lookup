@@ -357,7 +357,58 @@ refreshed later:
 Runtime records and their source registry are stored in
 `/var/lib/ua-lookup/samsung-firmware-cache.json` and
 `/var/lib/ua-lookup/samsung-firmware-sources.json`. Page rendering never
-contacts Samsung or Google.
+contacts any external service.
+
+#### Automatic Samsung enrichment
+
+`samsung_firmware_enrich.py` can discover official pages for unknown Samsung
+builds shown by the missing-MMTEL monitor. Discovery uses Brave Web Search,
+but a search result is only a URL candidate: metadata is committed only when
+the official Samsung page contains an exact match for both the complete model
+code and complete firmware build number.
+
+Create a dedicated Brave Search API key and add
+`BRAVE_SEARCH_API_KEY=<key>` to the protected service environment. Use an
+editor so the key is not placed in shell history:
+
+```bash
+${EDITOR:-nano} /opt/ua-lookup/config.env
+chmod 600 /opt/ua-lookup/config.env
+```
+
+Optional limits (shown with their defaults):
+
+```ini
+SAMSUNG_ENRICH_MAX_SEARCHES=10
+SAMSUNG_ENRICH_NOT_FOUND_RETRY_HOURS=24
+SAMSUNG_ENRICH_ERROR_RETRY_HOURS=6
+```
+
+Install the one-shot service and persistent six-hour timer:
+
+```bash
+install -m 0644 ua-lookup-samsung-enrichment.service \
+  /etc/systemd/system/ua-lookup-samsung-enrichment.service
+install -m 0644 ua-lookup-samsung-enrichment.timer \
+  /etc/systemd/system/ua-lookup-samsung-enrichment.timer
+systemctl daemon-reload
+systemctl start ua-lookup-samsung-enrichment.service
+systemctl enable --now ua-lookup-samsung-enrichment.timer
+```
+
+Verify the last run and next scheduled run:
+
+```bash
+systemctl status ua-lookup-samsung-enrichment.service --no-pager
+systemctl list-timers ua-lookup-samsung-enrichment.timer --no-pager
+journalctl -u ua-lookup-samsung-enrichment.service -n 100 --no-pager
+```
+
+The worker processes newest problem registrations first, searches at most ten
+eligible identities per run by default, and stores only model/build retry metadata
+in `/var/lib/ua-lookup/samsung-firmware-enrichment-state.json`. A file lock
+prevents overlapping runs. Existing verified records remain untouched when
+search, Samsung, parsing, or exact-match validation fails.
 
 ### Xiaomi / Redmi / POCO (HyperOS)
 
