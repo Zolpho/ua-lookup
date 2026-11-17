@@ -49,6 +49,9 @@ class DeviceMetadataTests(unittest.TestCase):
                 "security": "",
                 "fw_release_date": "",
                 "security_patch_level": "",
+                "metadata_status": "",
+                "source_url": "",
+                "research_url": "",
             },
         )
 
@@ -63,6 +66,22 @@ class DeviceMetadataTests(unittest.TestCase):
         self.assertEqual(metadata["security"], "Security-only update")
         self.assertEqual(metadata["fw_release_date"], "2025-08-05")
         self.assertEqual(metadata["security_patch_level"], "2025-08-01")
+        self.assertEqual(metadata["metadata_status"], "verified")
+        self.assertIn("doc.samsungmobile.com", metadata["source_url"])
+        self.assertEqual(metadata["research_url"], "")
+
+    def test_unknown_samsung_build_is_not_inferred_as_android_19(self):
+        metadata = parse_device_metadata(
+            "SM-A546B-A546BXXUNGZJ5 Samsung IMS 6.0"
+        )
+
+        self.assertEqual(metadata["model"], "Galaxy A54")
+        self.assertEqual(metadata["build_number"], "A546BXXUNGZJ5")
+        self.assertEqual(metadata["os_version"], "Unknown — not verified")
+        self.assertEqual(metadata["metadata_status"], "unverified")
+        self.assertEqual(metadata["source_url"], "")
+        self.assertIn("doc.samsungmobile.com", metadata["research_url"])
+        self.assertIn("A546BXXUNGZJ5", metadata["research_url"])
 
     def test_unknown_build_keeps_inferred_fields_and_blank_catalog_fields(self):
         metadata = parse_device_metadata(
@@ -88,6 +107,9 @@ class DeviceMetadataTests(unittest.TestCase):
                 "security": "",
                 "fw_release_date": "",
                 "security_patch_level": "",
+                "metadata_status": "",
+                "source_url": "",
+                "research_url": "",
             },
         )
 

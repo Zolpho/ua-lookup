@@ -97,6 +97,19 @@ class DefaultSearchTests(unittest.TestCase):
         self.assertEqual(labels["9"], "NRTRAN (5G)")
         self.assertEqual(labels["10"], "NR (5G)")
 
+    def test_request_routes_do_not_call_samsung_importer(self):
+        tree = parsed_app()
+        forbidden = {
+            "fetch_samsung_page",
+            "import_official_url",
+            "refresh_registered_sources",
+        }
+
+        for route_name in ("index", "mmtel_monitor_page"):
+            with self.subTest(route=route_name):
+                calls = called_function_names(function_named(tree, route_name))
+                self.assertTrue(forbidden.isdisjoint(calls))
+
 
 if __name__ == "__main__":
     unittest.main()

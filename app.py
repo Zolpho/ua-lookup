@@ -1210,8 +1210,9 @@ details code{display:block;max-width:520px;white-space:normal;overflow-wrap:anyw
   One row per IMSI, using its latest successful, non-deregister REGISTER in the
   last 24 hours. MMTEL is checked only in the device REGISTER Contact header.
   MSISDN comes from the current UCN mapping and may be unavailable for an older
-  or already-moved registration. Firmware fields show an em dash when no exact
-  catalog match is available.
+  or already-moved registration. Unmatched Samsung builds show
+  <b>Unknown — not verified</b> and provide an operator research link; only an
+  exact official Samsung model/build match supplies firmware metadata.
 </div>
 
 <div class="monitor-controls">
@@ -1252,7 +1253,15 @@ details code{display:block;max-width:520px;white-space:normal;overflow-wrap:anyw
     <td class="mono">{{ row.imsi }}</td>
     <td>{{ row.model or "—" }}</td>
     <td class="mono">{{ row.build_number or "—" }}</td>
-    <td>{{ row.os_version or "—" }}</td>
+    <td>{{ row.os_version or "—" }}
+      {% if row.metadata_status == "verified" and row.source_url %}
+        <br><a href="{{ row.source_url|e }}" target="_blank"
+               rel="noopener noreferrer">Official Samsung record</a>
+      {% elif row.metadata_status == "unverified" and row.research_url %}
+        <br><a href="{{ row.research_url|e }}" target="_blank"
+               rel="noopener noreferrer">Find official firmware</a>
+      {% endif %}
+    </td>
     <td>{{ row.security or "—" }}</td>
     <td class="mono">{{ row.fw_release_date or "—" }}</td>
     <td class="mono">{{ row.security_patch_level or "—" }}</td>

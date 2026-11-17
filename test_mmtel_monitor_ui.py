@@ -96,6 +96,20 @@ class MonitorTemplateTests(unittest.TestCase):
         self.assertIn('data-user-agent="{{ row.user_agent|e }}"', template)
         self.assertIn('data-original-index="{{ loop.index0 }}"', template)
 
+    def test_verified_and_unverified_samsung_actions_are_guarded_and_escaped(self):
+        template = monitor_template()
+
+        self.assertIn('row.metadata_status == "verified"', template)
+        self.assertIn('href="{{ row.source_url|e }}"', template)
+        self.assertIn("Official Samsung record", template)
+        self.assertIn('row.metadata_status == "unverified"', template)
+        self.assertIn('href="{{ row.research_url|e }}"', template)
+        self.assertIn("Find official firmware", template)
+        self.assertIn("Unknown — not verified", template)
+        self.assertEqual(template.count("{% macro device_table"), 1)
+        self.assertEqual(template.count("{{ device_table("), 2)
+        self.assertGreaterEqual(template.count('rel="noopener noreferrer"'), 2)
+
     def test_script_persists_shared_state_and_uses_stable_tie_breaker(self):
         template = monitor_template()
 

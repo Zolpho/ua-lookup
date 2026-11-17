@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "model_code": "SM-A165F",
+      "device_name": "Galaxy A16",
+      "build_number": "A165FXXUBEZJ7",
+      "android_version": "Android 17",
+      "release_date": "2026-11-02",
+      "security_patch_level": "2026-10-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A165F/031857241225/roh.html",
+      "verified_at": "2026-11-17T08:00:00+00:00"
+    },
+    {
+      "model_code": "SM-S936B",
+      "device_name": "Galaxy S25+",
+      "build_number": "S936BXXUDDZJB",
+      "android_version": "Android 17",
+      "release_date": "2026-11-05",
+      "security_patch_level": "2026-10-05",
+      "source_url": "https://doc.samsungmobile.com/SM-S936B/032724250225/wel.html",
+      "verified_at": "2026-11-17T08:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXUEDZJ1",
+      "android_version": "Android 17",
+      "release_date": "2026-10-19",
+      "security_patch_level": "2026-10-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXSECZI2",
+      "android_version": "Android 16",
+      "release_date": "2026-09-16",
+      "security_patch_level": "2026-09-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXSDCZHB",
+      "android_version": "Android 16",
+      "release_date": "2026-08-31",
+      "security_patch_level": "2026-08-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXSCCZG7",
+      "android_version": "Android 16",
+      "release_date": "2026-07-27",
+      "security_patch_level": "2026-07-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXSBCZF5",
+      "android_version": "Android 16",
+      "release_date": "2026-06-22",
+      "security_patch_level": "2026-06-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXSACZE2",
+      "android_version": "Android 16",
+      "release_date": "2026-05-21",
+      "security_patch_level": "2026-05-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXUACZDR",
+      "android_version": "Android 16",
+      "release_date": "2026-05-19",
+      "security_patch_level": "2026-04-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXSABZD1",
+      "android_version": "Android 16",
+      "release_date": "2026-04-20",
+      "security_patch_level": "2026-04-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXU9BZC4",
+      "android_version": "Android 16",
+      "release_date": "2026-03-30",
+      "security_patch_level": "2026-03-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXS9BZB6",
+      "android_version": "Android 16",
+      "release_date": "2026-03-03",
+      "security_patch_level": "2026-02-05",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXS8BZA7",
+      "android_version": "Android 16",
+      "release_date": "2026-01-26",
+      "security_patch_level": "2026-01-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXS7BYL3",
+      "android_version": "Android 16",
+      "release_date": "2025-12-16",
+      "security_patch_level": "2025-12-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXS7BYK3",
+      "android_version": "Android 16",
+      "release_date": "2025-11-24",
+      "security_patch_level": "2025-11-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXU6BYIF",
+      "android_version": "Android 16",
+      "release_date": "2025-10-20",
+      "security_patch_level": "2025-10-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXU6BYI5",
+      "android_version": "Android 16",
+      "release_date": "2025-09-25",
+      "security_patch_level": "2025-09-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXS6AYGE",
+      "android_version": "Android 15",
+      "release_date": "2025-08-05",
+      "security_patch_level": "2025-08-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXS5AYFA",
+      "android_version": "Android 15",
+      "release_date": "2025-07-15",
+      "security_patch_level": "2025-07-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXU4AYE7",
+      "android_version": "Android 15",
+      "release_date": "2025-06-09",
+      "security_patch_level": "2025-06-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXU3AYDK",
+      "android_version": "Android 15",
+      "release_date": "2025-05-19",
+      "security_patch_level": "2025-05-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    },
+    {
+      "model_code": "SM-A566B",
+      "device_name": "Galaxy A56",
+      "build_number": "A566BXXS2AYD3",
+      "android_version": "Android 15",
+      "release_date": "2025-04-24",
+      "security_patch_level": "2025-04-01",
+      "source_url": "https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html",
+      "verified_at": "2026-11-16T00:00:00+00:00"
+    }
+  ]
+}

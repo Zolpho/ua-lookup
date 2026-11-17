@@ -13,36 +13,15 @@ from typing import Any
 
 from time_display import format_zurich_datetime
 from ua_mappings import get_android_version
+from samsung_firmware import (
+    get_firmware_catalog,
+    lookup_samsung_firmware,
+    parse_samsung_user_agent,
+    samsung_research_url,
+)
 
 
 MMTEL_SERVICE = "3gpp-service.ims.icsi.mmtel"
-
-
-# Official Swiss Samsung release data for the Galaxy A56 build family observed
-# in IMS User-Agent headers. Source:
-# https://doc.samsungmobile.com/SM-A566B/033284250424/wel.html
-SAMSUNG_FIRMWARE = {
-    "A566BXXUEDZJ1": ("Android 17", "2026-10-19", "2026-10-05"),
-    "A566BXXSECZI2": ("Android 16", "2026-09-16", "2026-09-05"),
-    "A566BXXSDCZHB": ("Android 16", "2026-08-31", "2026-08-05"),
-    "A566BXXSCCZG7": ("Android 16", "2026-07-27", "2026-07-05"),
-    "A566BXXSBCZF5": ("Android 16", "2026-06-22", "2026-06-05"),
-    "A566BXXSACZE2": ("Android 16", "2026-05-21", "2026-05-05"),
-    "A566BXXUACZDR": ("Android 16", "2026-05-19", "2026-04-05"),
-    "A566BXXSABZD1": ("Android 16", "2026-04-20", "2026-04-05"),
-    "A566BXXU9BZC4": ("Android 16", "2026-03-30", "2026-03-05"),
-    "A566BXXS9BZB6": ("Android 16", "2026-03-03", "2026-02-05"),
-    "A566BXXS8BZA7": ("Android 16", "2026-01-26", "2026-01-01"),
-    "A566BXXS7BYL3": ("Android 16", "2025-12-16", "2025-12-01"),
-    "A566BXXS7BYK3": ("Android 16", "2025-11-24", "2025-11-01"),
-    "A566BXXU6BYIF": ("Android 16", "2025-10-20", "2025-10-01"),
-    "A566BXXU6BYI5": ("Android 16", "2025-09-25", "2025-09-01"),
-    "A566BXXS6AYGE": ("Android 15", "2025-08-05", "2025-08-01"),
-    "A566BXXS5AYFA": ("Android 15", "2025-07-15", "2025-07-01"),
-    "A566BXXU4AYE7": ("Android 15", "2025-06-09", "2025-06-01"),
-    "A566BXXU3AYDK": ("Android 15", "2025-05-19", "2025-05-01"),
-    "A566BXXS2AYD3": ("Android 15", "2025-04-24", "2025-04-01"),
-}
 
 
 def classify_contact(contact: str | None) -> str:
@@ -93,13 +72,24 @@ def _split_device_and_android(value: str) -> tuple[str, str]:
     return value, ""
 
 
-def parse_device_metadata(user_agent: str | None) -> dict[str, str]:
+def parse_device_metadata(user_agent: str | None, samsung_catalog=None) -> dict[str, str]:
     """Extract build details and add exact catalog metadata when known."""
     ua = (user_agent or "").strip()
+    samsung_identity = parse_samsung_user_agent(ua)
+    firmware = None
     apple = re.search(r"\biOS/(\d+(?:\.\d+)*)\s+iPhone\b", ua, re.IGNORECASE)
     if apple:
         model = "Apple iPhone"
         os_version = f"iOS {apple.group(1)}"
+    elif samsung_identity:
+        catalog = (
+            get_firmware_catalog()
+            if samsung_catalog is None
+            else samsung_catalog
+        )
+        firmware = lookup_samsung_firmware(samsung_identity, catalog)
+        model = firmware.device_name if firmware else samsung_identity.device_name
+        os_version = firmware.android_version if firmware else "Unknown — not verified"
     else:
         inferred = get_android_version(ua)
         model, os_version = _split_device_and_android(inferred)
@@ -107,20 +97,21 @@ def parse_device_metadata(user_agent: str | None) -> dict[str, str]:
     security = ""
     release_date = ""
     patch_level = ""
+    metadata_status = ""
+    source_url = ""
+    research_url = ""
 
-    samsung = re.match(
-        r"SM-([A-Z0-9]+)-([A-Z0-9]+)\s+Samsung\s+IMS",
-        ua,
-        re.IGNORECASE,
-    )
-    if samsung:
-        model_code = samsung.group(1).upper()
-        build_number = samsung.group(2).upper()
-        if not model:
-            model = f"SM-{model_code}"
-        catalog = SAMSUNG_FIRMWARE.get(build_number)
-        if catalog:
-            os_version, release_date, patch_level = catalog
+    if samsung_identity:
+        model_code = samsung_identity.model_code.removeprefix("SM-")
+        build_number = samsung_identity.build_number
+        if firmware:
+            release_date = firmware.release_date
+            patch_level = firmware.security_patch_level
+            metadata_status = "verified"
+            source_url = firmware.source_url
+        else:
+            metadata_status = "unverified"
+            research_url = samsung_research_url(samsung_identity)
         build_kind = build_number[len(model_code) + 2:len(model_code) + 3]
         if build_kind == "S":
             security = "Security-only update"
@@ -146,6 +137,9 @@ def parse_device_metadata(user_agent: str | None) -> dict[str, str]:
         "security": security,
         "fw_release_date": release_date,
         "security_patch_level": patch_level,
+        "metadata_status": metadata_status,
+        "source_url": source_url,
+        "research_url": research_url,
     }
 
 

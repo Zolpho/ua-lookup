@@ -62,7 +62,11 @@ The app runs **on the Docker host** and connects to the DB container via its Doc
 ```
 /opt/ua-lookup/
 ├── app.py                    # Flask application — main entry point
-├── ua_mappings.py            # Device/OS version mapping (Samsung, Pixel, Xiaomi, Fairphone, iOS)
+├── ua_mappings.py            # Device/OS mapping for Pixel, Xiaomi, Fairphone and iOS
+├── samsung_firmware.py       # Exact, verified Samsung firmware metadata lookup
+├── samsung_firmware_admin.py # Guarded operator importer for official Samsung pages
+├── data/
+│   └── samsung_firmware_catalog.json # Bundled verified Samsung records
 ├── config.env                # Credentials and secrets (NOT committed to VCS)
 ├── venv/                     # Python virtual environment
 └── /var/log/ua-lookup.log    # Application log file
@@ -308,63 +312,52 @@ Coordinates are cached in memory for the lifetime of the process to avoid redund
 
 ---
 
-## OS Version Mapping (`ua_mappings.py`)
+## Device and OS Version Mapping
 
-The `get_android_version(ua)` function decodes raw UA strings:
+Non-Samsung User-Agents are decoded by `get_android_version(ua)` in
+`ua_mappings.py`. Samsung firmware metadata is accepted only when the exact
+model and build number exist in the verified local catalog.
 
 | UA string | Decoded output |
 |---|---|
-| `SM-F731B-F731BXXS5FZA1 Samsung IMS 6.0` | `Galaxy Z Flip5 — Android 16` |
-| `SM-S936B-S936BXXS7BYLR Samsung IMS 6.0` | `Galaxy S25+ — Android 15` |
+| `SM-A165F-A165FXXUBEZJ7 Samsung IMS 6.0` | `Galaxy A16 — Android 17` (verified) |
+| `SM-A546B-A546BXXUNGZJ5 Samsung IMS 6.0` | `Unknown — not verified` |
 | `Xiaomi_Xiaomi 15T Pro_OS3.0.13.0.WOSEUXM` | `Xiaomi 15T Pro — Android 16` |
 | `Google_Pixel8_Android 16_BP4A.260205.001` | `Pixel8 — Android 16` |
 | `Fairphone_Fairphone 6_FP6.QREL.15.151.0` | `Fairphone 6 — Android 15` |
 | `iOS/26.3 iPhone` | `iOS 26` |
 
-### Supported Samsung models
+### Samsung firmware verification
 
-| Series | Models |
-|---|---|
-| Galaxy S25 (launch Android 15) | S931B, S936B, S938B |
-| Galaxy S24 (launch Android 14) | S921B, S926B, S928B |
-| Galaxy S23 (launch Android 13) | S911B/U/U1, S916B/U/U1, S918B/U/U1 |
-| Galaxy S22 (launch Android 12) | S901B, S906B, S908B |
-| Galaxy A-series | A566B (A56), A556B (A55), A546B (A54), A536B (A53), A336B (A33) |
-| Galaxy Z Fold | F956B (Fold6), F946B (Fold5), F936B (Fold4) |
-| Galaxy Z Flip | F741B (Flip6), F731B (Flip5), F721B (Flip4) |
+Samsung build strings are not decoded heuristically. The monitor performs an
+exact `(model code, build number)` lookup against records obtained from
+`doc.samsungmobile.com`. A match shows the verified Android version, firmware
+release date, security patch level and a link to the official record. An
+unknown build shows **Unknown — not verified** and a one-click Google search
+restricted to the official Samsung documentation domain.
 
-### Samsung firmware decoding
+After locating the exact official English firmware page, an operator can add
+it to the runtime catalog without editing application source:
 
-Samsung IMS UA format: `SM-{MODEL}-{MODEL}{REGION}{VARIANT}{ANDROID}{YEAR}{MONTH}{BUILD}`
-
-Example: `SM-F731B-F731BXXS5FZA1`
-- `F731B` → Galaxy Z Flip5, launched Android 13
-- `XX` → open/unlocked region
-- `S` → variant
-- `F` → Android version letter (offset from launch)
-- `Z` → year (Z = 2026)
-- `A` → month (A = January)
-- `1` → build revision
-
-**Android letter → offset from launch version** (ground-truth from `doc.samsungmobile.com`):
-
-| Letter | Offset | Example (Flip5, launch=13) |
-|---|---|---|
-| A, B | +0 | Android 13 (launch / QPR) |
-| C | +1 | Android 14 |
-| D | +2 | Android 15 |
-| E, F | +3 | Android 16 |
-| G | +4 | Android 17 |
-
-The year marker `[W-Z]` in the regex (`W`=2023, `X`=2024, `Y`=2025, `Z`=2026) is used to anchor the pattern and avoid false positives in the model prefix.
-
-### Adding a new Samsung model
-
-Edit `SAMSUNG_MODELS` in `ua_mappings.py`:
-```python
-"S931B": ("Galaxy S25", 15),   # model_code: (device name, launch Android version)
+```bash
+cd /opt/ua-lookup
+./venv/bin/python samsung_firmware_admin.py import-url \
+  'https://doc.samsungmobile.com/SM-A165F/EUX/doc.html'
 ```
-Restart the service — no changes to `app.py` needed.
+
+The importer accepts HTTPS pages only from the exact
+`doc.samsungmobile.com` host, validates redirects and content, requires the
+page model/build to match, and writes atomically. Registered pages can be
+refreshed later:
+
+```bash
+./venv/bin/python samsung_firmware_admin.py refresh
+```
+
+Runtime records and their source registry are stored in
+`/var/lib/ua-lookup/samsung-firmware-cache.json` and
+`/var/lib/ua-lookup/samsung-firmware-sources.json`. Page rendering never
+contacts Samsung or Google.
 
 ### Xiaomi / Redmi / POCO (HyperOS)
 
@@ -462,7 +455,7 @@ Log format: `YYYY-MM-DD HH:MM:SS [INFO/ERROR] message`
 - **24-hour call window** — INVITE/BYE data older than 24 hours is not searched
 - **MSISDN registration lookup** — scans `raw` SIP text limited to last 2 hours to avoid timeout; IMSI lookup is fast (indexed)
 - **iOS deregistration** — Apple devices do not send `Expires: 0`; airplane mode / power off appear as 📵 Coverage loss
-- **Samsung model coverage** — `ua_mappings.py` must be manually updated for new device models
+- **Samsung firmware coverage** — only exact model/build pairs imported from official Samsung documentation are labelled; unmatched builds remain `Unknown — not verified`
 - **Cell geolocation accuracy** — coordinates are approximate (Google uses tower triangulation, not GPS); accuracy varies by cell density
 - **Statement timeout** — queries capped at 15 seconds; very old partitions may time out on `raw ILIKE` scans
 - **Docker bridge IP** — may change if the `db` container is recreated; update `DB_HOST` in `config.env`
