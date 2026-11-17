@@ -14,6 +14,9 @@ monitor without moving external network access into the Flask request path.
   `https://doc.samsungmobile.com/<MODEL>/<CSC>/doc.html` path from an ordered,
   configurable CSC list. It uses no search provider, LLM, or additional API
   key.
+- Each `doc.html` selector shell must provide an embedded English document URL
+  matching `/<MODEL>/<12 digits>/eng.html`. The worker resolves only that
+  same-model, same-host path before invoking the exact firmware importer.
 - Candidate URLs must use HTTPS and the exact host
   `doc.samsungmobile.com`. Redirects remain restricted to that host.
 - A candidate is accepted only when the official page model equals the IMS

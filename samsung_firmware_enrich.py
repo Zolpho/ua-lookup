@@ -10,8 +10,10 @@ import os
 import re
 import urllib.error
 from contextlib import contextmanager
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
+from urllib.parse import urljoin, urlsplit
 
 from mmtel_monitor import classify_contact
 from samsung_firmware import (
@@ -23,6 +25,7 @@ from samsung_firmware import (
 )
 from samsung_firmware_admin import (
     _write_json_atomically,
+    fetch_samsung_page,
     import_exact_official_url,
     refresh_registered_sources,
     validate_samsung_url,
@@ -86,6 +89,58 @@ def build_official_urls(
         )
         for csc in normalized_cscs
     ]
+
+
+class _SamsungDocumentShellParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.english_documents: list[str] = []
+        self.default_documents: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
+        values = dict(attrs)
+        candidate = str(values.get("value") or "").strip()
+        if tag.lower() == "option" and candidate.lower().endswith("/eng.html"):
+            self.english_documents.append(candidate)
+        if (
+            tag.lower() == "input"
+            and str(values.get("id") or "").lower() == "dflt_page"
+            and candidate
+        ):
+            self.default_documents.append(candidate)
+
+
+def resolve_official_document_url(
+    identity: SamsungIdentity,
+    shell_url: str,
+    fetcher: Callable[[str], tuple[str, str]] = fetch_samsung_page,
+) -> str:
+    """Resolve Samsung's selector shell to its exact English document."""
+    normalized_shell = validate_samsung_url(shell_url)
+    html, final_shell_url = fetcher(normalized_shell)
+    final_shell_url = validate_samsung_url(final_shell_url)
+
+    parser = _SamsungDocumentShellParser()
+    parser.feed(html)
+    candidates = [*parser.english_documents, *parser.default_documents]
+    expected_model = identity.model_code.upper()
+
+    for raw_candidate in candidates:
+        document_url = validate_samsung_url(urljoin(final_shell_url, raw_candidate))
+        parsed = urlsplit(document_url)
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if (
+            len(path_parts) == 3
+            and path_parts[0].upper() == expected_model
+            and re.fullmatch(r"[0-9]{12}", path_parts[1])
+            and path_parts[2].lower() == "eng.html"
+            and not parsed.query
+        ):
+            return document_url
+
+    if candidates:
+        raise ValueError("Samsung English document does not match requested model")
+    raise ValueError("Samsung shell contains no official English document")
 
 
 def unknown_problem_identities(
@@ -175,6 +230,9 @@ def run_enrichment(
     candidate_builder: Callable[
         [SamsungIdentity, Iterable[str]], list[str]
     ] = build_official_urls,
+    resolver: Callable[
+        [SamsungIdentity, str], str
+    ] = resolve_official_document_url,
     importer: Callable[
         [SamsungIdentity, str], FirmwareRecord
     ] = import_exact_official_url,
@@ -213,7 +271,8 @@ def run_enrichment(
 
         for candidate in candidates:
             try:
-                importer(identity, candidate)
+                document_url = resolver(identity, candidate)
+                importer(identity, document_url)
             except urllib.error.HTTPError as exc:
                 if exc.code not in {404, 410}:
                     log.warning(
