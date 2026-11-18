@@ -38,6 +38,20 @@ class ElementCollector(HTMLParser):
 
 
 class MonitorTemplateTests(unittest.TestCase):
+    def test_page_has_one_ems_csv_export_action(self):
+        rendered = monitor_template()
+        parsed = ElementCollector()
+        parsed.feed(rendered)
+
+        export_links = [
+            attrs
+            for tag, attrs in parsed.elements
+            if tag == "a" and attrs.get("href") == "/mmtel-monitor/export.csv"
+        ]
+        self.assertEqual(len(export_links), 1)
+        self.assertEqual(parsed.text.count("Export for EMS"), 1)
+        self.assertEqual(parsed.text.count("Reload page"), 1)
+
     def test_page_uses_os_column_and_one_filter_for_both_problem_tables(self):
         rendered = monitor_template()
         parsed = ElementCollector()

@@ -52,6 +52,18 @@ def literal_assignment(tree, name):
     raise AssertionError(f"{name} assignment not found")
 
 
+def assignment_named(tree, name):
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in node.targets
+        ):
+            return node
+    raise AssertionError(f"{name} assignment not found")
+
+
 class DefaultSearchTests(unittest.TestCase):
     def test_default_index_uses_registration_not_call_lookup(self):
         index = function_named(parsed_app(), "index")
@@ -96,6 +108,34 @@ class DefaultSearchTests(unittest.TestCase):
         self.assertEqual(labels["8"], "NB-IoT (4G LTE)")
         self.assertEqual(labels["9"], "NRTRAN (5G)")
         self.assertEqual(labels["10"], "NR (5G)")
+
+    def test_ems_blueprint_uses_required_token_optional_ips_and_shared_cache(self):
+        tree = parsed_app()
+        token_assignment = assignment_named(tree, "EMS_API_TOKEN")
+        ips_assignment = assignment_named(tree, "EMS_ALLOWED_IPS")
+        cache_helper = function_named(tree, "_get_cached_mmtel_monitor_report")
+        monitor_page = function_named(tree, "mmtel_monitor_page")
+        source = APP_PATH.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            ast.unparse(token_assignment.value),
+            "_require_env('EMS_API_TOKEN')",
+        )
+        self.assertEqual(
+            ast.unparse(ips_assignment.value),
+            "os.environ.get('EMS_ALLOWED_IPS', '')",
+        )
+        self.assertIn(
+            "_mmtel_monitor_cache.get(_load_mmtel_monitor_report)",
+            ast.unparse(cache_helper),
+        )
+        self.assertIn(
+            "_get_cached_mmtel_monitor_report",
+            called_function_names(monitor_page),
+        )
+        self.assertNotIn("_mmtel_monitor_cache.get", ast.unparse(monitor_page))
+        self.assertIn("app.register_blueprint(", source)
+        self.assertIn("create_ems_blueprint(", source)
 
     def test_request_routes_do_not_call_samsung_importer(self):
         tree = parsed_app()

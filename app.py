@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import duckdb
 from ua_mappings import get_android_version
 from cell_location import decode_eutran_cell
+from ems_export import create_ems_blueprint
 from mmtel_monitor import (
     MonitorCache,
     build_monitor_report,
@@ -41,6 +42,8 @@ log = logging.getLogger(__name__)
 app = Flask(__name__)
 
 GOOGLE_API_KEY   = _require_env("GOOGLE_API_KEY")
+EMS_API_TOKEN    = _require_env("EMS_API_TOKEN")
+EMS_ALLOWED_IPS  = os.environ.get("EMS_ALLOWED_IPS", "")
 DUCKLAKE_CATALOG = os.environ.get("DUCKLAKE_CATALOG", "/data/homer/homer_catalog.sqlite")
 DUCKLAKE_DATA    = os.environ.get("DUCKLAKE_DATA",    "/data/homer/parquet")
 
@@ -896,6 +899,19 @@ def _load_mmtel_monitor_report() -> dict:
     )
     return report
 
+
+def _get_cached_mmtel_monitor_report() -> dict:
+    return _mmtel_monitor_cache.get(_load_mmtel_monitor_report)
+
+
+app.register_blueprint(
+    create_ems_blueprint(
+        _get_cached_mmtel_monitor_report,
+        EMS_API_TOKEN,
+        allowed_ips=EMS_ALLOWED_IPS,
+    )
+)
+
 HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -1204,6 +1220,7 @@ details code{display:block;max-width:520px;white-space:normal;overflow-wrap:anyw
   {% endif %}
   <span>Auto-refresh: 5 minutes</span>
   <a class="refresh" href="/mmtel-monitor">Reload page</a>
+  <a class="refresh" href="/mmtel-monitor/export.csv">Export for EMS</a>
 </div>
 
 <div class="note">
@@ -2104,9 +2121,7 @@ def mmtel_monitor_page():
         "generated_at": "",
     }
     try:
-        report = _mmtel_monitor_cache.get(
-            _load_mmtel_monitor_report,
-        )
+        report = _get_cached_mmtel_monitor_report()
         error = None
     except Exception as exc:
         log.exception("MMTEL monitor refresh failed")
