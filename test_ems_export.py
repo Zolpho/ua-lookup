@@ -114,10 +114,12 @@ class EmsRecordTests(unittest.TestCase):
             {
                 "missing_mmtel": [
                     problem_row(
+                        msisdn="41790000001",
                         imsi="228580000000001",
                         timestamp=datetime.datetime(2026, 11, 18, 12, 0),
                     ),
                     problem_row(
+                        msisdn="41790000002",
                         imsi="228580000000002",
                         timestamp=datetime.datetime(
                             2026, 11, 18, 12, 0, tzinfo=plus_two
@@ -137,12 +139,21 @@ class EmsRecordTests(unittest.TestCase):
         records = build_ems_records(
             {
                 "missing_mmtel": [
-                    problem_row(imsi="228580000000003", timestamp=instant),
                     problem_row(
+                        msisdn="41790000003",
+                        imsi="228580000000003",
+                        timestamp=instant,
+                    ),
+                    problem_row(
+                        msisdn="41790000004",
                         imsi="228580000000004",
                         timestamp=instant + datetime.timedelta(minutes=1),
                     ),
-                    problem_row(imsi="228580000000001", timestamp=instant),
+                    problem_row(
+                        msisdn="41790000001",
+                        imsi="228580000000001",
+                        timestamp=instant,
+                    ),
                 ]
             }
         )
@@ -150,6 +161,32 @@ class EmsRecordTests(unittest.TestCase):
         self.assertEqual(
             [record["imsi"] for record in records],
             ["228580000000004", "228580000000001", "228580000000003"],
+        )
+
+    def test_keeps_only_the_newest_registration_for_each_msisdn(self):
+        older = datetime.datetime(2026, 11, 18, 9, 0, tzinfo=UTC)
+        newer = datetime.datetime(2026, 11, 18, 10, 0, tzinfo=UTC)
+
+        records = build_ems_records(
+            {
+                "missing_mmtel": [
+                    problem_row(imsi="228580000000001", timestamp=older),
+                    problem_row(imsi="228580000000002", timestamp=newer),
+                    problem_row(
+                        msisdn="41790000003",
+                        imsi="228580000000003",
+                        timestamp=older,
+                    ),
+                ]
+            }
+        )
+
+        self.assertEqual(
+            [(record["msisdn"], record["imsi"]) for record in records],
+            [
+                ("41791234567", "228580000000002"),
+                ("41790000003", "228580000000003"),
+            ],
         )
 
     def test_event_id_is_stable_full_sha256(self):
@@ -375,6 +412,7 @@ class EmsBlueprintTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "text/csv")
         self.assertEqual(response.content_type, "text/csv; charset=utf-8")
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertTrue(response.data.startswith(b"\xef\xbb\xbf"))
         self.assertRegex(
             response.headers["Content-Disposition"],

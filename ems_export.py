@@ -77,7 +77,14 @@ def build_ems_records(report: Mapping[str, Any]) -> list[dict[str, str]]:
 
     normalized.sort(key=lambda item: item[1]["imsi"])
     normalized.sort(key=lambda item: item[0], reverse=True)
-    return [record for _timestamp, record in normalized]
+    records: list[dict[str, str]] = []
+    seen_msisdns: set[str] = set()
+    for _timestamp_value, record in normalized:
+        if record["msisdn"] in seen_msisdns:
+            continue
+        seen_msisdns.add(record["msisdn"])
+        records.append(record)
+    return records
 
 
 def render_ems_csv(records: Iterable[Mapping[str, str]]) -> bytes:
@@ -151,6 +158,7 @@ def create_ems_blueprint(
         response.headers["Content-Disposition"] = (
             f'attachment; filename="{filename}"'
         )
+        response.headers["Cache-Control"] = "no-store"
         return response
 
     @blueprint.get("/api/v1/mmtel-missing")
