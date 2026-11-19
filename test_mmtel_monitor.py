@@ -72,7 +72,8 @@ class DeviceMetadataTests(unittest.TestCase):
 
     def test_unknown_samsung_build_is_not_inferred_as_android_19(self):
         metadata = parse_device_metadata(
-            "SM-A546B-A546BXXUNGZJ5 Samsung IMS 6.0"
+            "SM-A546B-A546BXXUNGZJ5 Samsung IMS 6.0",
+            samsung_catalog={},
         )
 
         self.assertEqual(metadata["model"], "Galaxy A54")
