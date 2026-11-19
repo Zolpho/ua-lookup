@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime
 import csv
 import hashlib
-import hmac
 import ipaddress
 import io
 import re
@@ -129,14 +128,15 @@ def parse_ems_allowed_ips(
 
 def create_ems_blueprint(
     report_loader: Callable[[], Mapping[str, Any]],
-    api_token: str,
     allowed_ips: Iterable[str] | str = (),
 ) -> Blueprint:
-    """Create the operator CSV and guarded EMS polling routes."""
-    if len(str(api_token)) < 32:
-        raise ValueError("EMS_API_TOKEN must contain at least 32 characters")
+    """Create the operator CSV and optional IP-filtered EMS polling routes."""
     if isinstance(allowed_ips, str):
         allowed = parse_ems_allowed_ips(allowed_ips)
+        if allowed_ips.strip() and not allowed:
+            raise ValueError(
+                "EMS_ALLOWED_IPS must contain at least one address when configured"
+            )
     else:
         allowed = parse_ems_allowed_ips(",".join(str(value) for value in allowed_ips))
 
@@ -163,13 +163,6 @@ def create_ems_blueprint(
 
     @blueprint.get("/api/v1/mmtel-missing")
     def api_missing_mmtel() -> Response:
-        authorization = request.headers.get("Authorization", "")
-        expected = f"Bearer {api_token}"
-        if not hmac.compare_digest(authorization, expected):
-            response = api_response({"error": "unauthorized"}, 401)
-            response.headers["WWW-Authenticate"] = "Bearer"
-            return response
-
         if allowed:
             try:
                 remote_address = ipaddress.ip_address(request.remote_addr or "")

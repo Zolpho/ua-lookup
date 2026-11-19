@@ -264,8 +264,6 @@ class EmsCsvTests(unittest.TestCase):
 
 
 class EmsBlueprintTests(unittest.TestCase):
-    TOKEN = "a" * 64
-
     def make_client(self, report=None, allowed_ips=()):
         calls = []
 
@@ -275,13 +273,9 @@ class EmsBlueprintTests(unittest.TestCase):
 
         app = Flask(__name__)
         app.register_blueprint(
-            create_ems_blueprint(loader, self.TOKEN, allowed_ips=allowed_ips)
+            create_ems_blueprint(loader, allowed_ips=allowed_ips)
         )
         return app.test_client(), calls
-
-    def test_rejects_short_token_during_blueprint_creation(self):
-        with self.assertRaisesRegex(ValueError, "32"):
-            create_ems_blueprint(lambda: {}, "too-short")
 
     def test_parses_exact_ipv4_and_ipv6_addresses(self):
         allowed = parse_ems_allowed_ips("192.0.2.10, 2001:db8::10")
@@ -295,56 +289,49 @@ class EmsBlueprintTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "EMS_ALLOWED_IPS"):
             parse_ems_allowed_ips("192.0.2.10,not-an-ip")
 
+    def test_blueprint_rejects_nonblank_allowlist_without_addresses(self):
+        with self.assertRaisesRegex(ValueError, "EMS_ALLOWED_IPS"):
+            create_ems_blueprint(lambda: {}, allowed_ips=", ,")
+
     def test_ipv4_mapped_ipv6_does_not_equal_plain_ipv4(self):
         allowed = parse_ems_allowed_ips("::ffff:192.0.2.10")
         plain_ipv4 = next(iter(parse_ems_allowed_ips("192.0.2.10")))
 
         self.assertNotIn(plain_ipv4, allowed)
 
-    def test_invalid_authorization_forms_are_identical_and_do_not_load_report(self):
-        invalid_headers = [
-            {},
+    def test_api_without_authorization_succeeds(self):
+        client, calls = self.make_client()
+
+        response = client.get("/api/v1/mmtel-missing")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(calls, ["loaded"])
+
+    def test_stale_and_malformed_authorization_headers_are_ignored(self):
+        obsolete_headers = [
             {"Authorization": "Basic abc"},
             {"Authorization": "Bearer"},
-            {"Authorization": "Bearer wrong"},
-            {"Authorization": f"bearer {self.TOKEN}"},
-            {"Authorization": f"Bearer  {self.TOKEN}"},
-            {"Authorization": f"Bearer {self.TOKEN} trailing"},
+            {"Authorization": "Bearer obsolete-token"},
+            {"Authorization": "not even an auth scheme"},
         ]
         client, calls = self.make_client()
 
         responses = [
             client.get("/api/v1/mmtel-missing", headers=headers)
-            for headers in invalid_headers
+            for headers in obsolete_headers
         ]
 
-        self.assertTrue(all(response.status_code == 401 for response in responses))
-        self.assertTrue(
-            all(response.get_json() == {"error": "unauthorized"} for response in responses)
-        )
-        self.assertTrue(
-            all(response.headers.get("WWW-Authenticate") == "Bearer" for response in responses)
-        )
+        self.assertTrue(all(response.status_code == 200 for response in responses))
         self.assertTrue(
             all(response.headers.get("Cache-Control") == "no-store" for response in responses)
         )
-        self.assertEqual(calls, [])
+        self.assertEqual(calls, ["loaded"] * len(obsolete_headers))
 
     def test_query_token_is_ignored(self):
         client, calls = self.make_client()
 
-        response = client.get(f"/api/v1/mmtel-missing?token={self.TOKEN}")
-
-        self.assertEqual(response.status_code, 401)
-        self.assertEqual(calls, [])
-
-    def test_exact_bearer_token_succeeds(self):
-        client, calls = self.make_client()
-
-        response = client.get(
-            "/api/v1/mmtel-missing",
-            headers={"Authorization": f"Bearer {self.TOKEN}"},
-        )
+        response = client.get("/api/v1/mmtel-missing?token=obsolete-token")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(calls, ["loaded"])
@@ -354,7 +341,6 @@ class EmsBlueprintTests(unittest.TestCase):
 
         response = client.get(
             "/api/v1/mmtel-missing",
-            headers={"Authorization": f"Bearer {self.TOKEN}"},
             environ_base={"REMOTE_ADDR": "192.0.2.11"},
         )
 
@@ -368,7 +354,6 @@ class EmsBlueprintTests(unittest.TestCase):
 
         response = client.get(
             "/api/v1/mmtel-missing",
-            headers={"Authorization": f"Bearer {self.TOKEN}"},
             environ_base={"REMOTE_ADDR": "192.0.2.10"},
         )
 
@@ -380,7 +365,6 @@ class EmsBlueprintTests(unittest.TestCase):
 
         response = client.get(
             "/api/v1/mmtel-missing",
-            headers={"Authorization": f"Bearer {self.TOKEN}"},
             environ_base={"REMOTE_ADDR": "203.0.113.99"},
         )
 
@@ -444,10 +428,7 @@ class EmsBlueprintTests(unittest.TestCase):
         }
         client, calls = self.make_client(report=report)
 
-        response = client.get(
-            "/api/v1/mmtel-missing",
-            headers={"Authorization": f"Bearer {self.TOKEN}"},
-        )
+        response = client.get("/api/v1/mmtel-missing")
         payload = response.get_json()
 
         self.assertEqual(response.status_code, 200)
@@ -468,10 +449,7 @@ class EmsBlueprintTests(unittest.TestCase):
             report={"missing_mmtel": [], "generated_at": "generated"}
         )
 
-        response = client.get(
-            "/api/v1/mmtel-missing",
-            headers={"Authorization": f"Bearer {self.TOKEN}"},
-        )
+        response = client.get("/api/v1/mmtel-missing")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -489,13 +467,10 @@ class EmsBlueprintTests(unittest.TestCase):
             raise RuntimeError("sensitive backend detail")
 
         app = Flask(__name__)
-        app.register_blueprint(create_ems_blueprint(failing_loader, self.TOKEN))
+        app.register_blueprint(create_ems_blueprint(failing_loader))
         client = app.test_client()
 
-        response = client.get(
-            "/api/v1/mmtel-missing",
-            headers={"Authorization": f"Bearer {self.TOKEN}"},
-        )
+        response = client.get("/api/v1/mmtel-missing")
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.get_json(), {"error": "service_unavailable"})

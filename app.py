@@ -42,7 +42,6 @@ log = logging.getLogger(__name__)
 app = Flask(__name__)
 
 GOOGLE_API_KEY   = _require_env("GOOGLE_API_KEY")
-EMS_API_TOKEN    = _require_env("EMS_API_TOKEN")
 EMS_ALLOWED_IPS  = os.environ.get("EMS_ALLOWED_IPS", "")
 DUCKLAKE_CATALOG = os.environ.get("DUCKLAKE_CATALOG", "/data/homer/homer_catalog.sqlite")
 DUCKLAKE_DATA    = os.environ.get("DUCKLAKE_DATA",    "/data/homer/parquet")
@@ -907,7 +906,6 @@ def _get_cached_mmtel_monitor_report() -> dict:
 app.register_blueprint(
     create_ems_blueprint(
         _get_cached_mmtel_monitor_report,
-        EMS_API_TOKEN,
         allowed_ips=EMS_ALLOWED_IPS,
     )
 )
