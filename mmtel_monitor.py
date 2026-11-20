@@ -22,6 +22,20 @@ from samsung_firmware import (
 
 
 MMTEL_SERVICE = "3gpp-service.ims.icsi.mmtel"
+POPULATION_PREFIXES = (
+    ("22858000", "B1"),
+    ("22865", "NX"),
+    ("22858001", "MF"),
+)
+
+
+def population_from_imsi(imsi: str | None) -> str:
+    """Return the configured subscriber population for an IMSI prefix."""
+    normalized = str(imsi or "").split("@", 1)[0].strip()
+    for prefix, population in POPULATION_PREFIXES:
+        if normalized.startswith(prefix):
+            return population
+    return ""
 
 
 def classify_contact(contact: str | None) -> str:
@@ -186,6 +200,7 @@ def build_monitor_report(
             ),
             "msisdn": str(msisdn_by_imsi.get(imsi) or ""),
             "imsi": imsi,
+            "population": population_from_imsi(imsi),
             "user_agent": str(registration.get("user_agent") or ""),
             "contact": str(registration.get("contact") or ""),
             "status": status,

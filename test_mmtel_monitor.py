@@ -7,11 +7,23 @@ from mmtel_monitor import (
     classify_contact,
     parse_device_metadata,
     parse_ucn_subscriber_lines,
+    population_from_imsi,
     registration_expires,
 )
 
 
 UTC = datetime.timezone.utc
+
+
+class PopulationTests(unittest.TestCase):
+    def test_maps_known_imsi_prefixes(self):
+        self.assertEqual(population_from_imsi("228580001234567"), "B1")
+        self.assertEqual(population_from_imsi("228651234567890"), "NX")
+        self.assertEqual(population_from_imsi("228580011234567"), "MF")
+
+    def test_unknown_or_empty_imsi_has_no_population(self):
+        self.assertEqual(population_from_imsi("228580021234567"), "")
+        self.assertEqual(population_from_imsi(""), "")
 
 
 class ContactClassificationTests(unittest.TestCase):
@@ -199,6 +211,8 @@ class ReportTests(unittest.TestCase):
             ["228580000000002"],
         )
         self.assertEqual(report["missing_mmtel"][0]["msisdn"], "41790000001")
+        self.assertEqual(report["missing_mmtel"][0]["population"], "B1")
+        self.assertEqual(report["unable_to_verify"][0]["population"], "B1")
         self.assertNotIn(
             "228580000000003",
             [row["imsi"] for row in report["missing_mmtel"]],

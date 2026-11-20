@@ -1233,7 +1233,7 @@ details code{display:block;max-width:520px;white-space:normal;overflow-wrap:anyw
 <div class="monitor-controls">
   <label for="monitor-filter">Filter problem registrations
     <input id="monitor-filter" type="search"
-           placeholder="Filter device, build, OS or User-Agent"
+           placeholder="Filter population, IMSI, device, build, OS or User-Agent"
            autocomplete="off">
   </label>
 </div>
@@ -1242,7 +1242,7 @@ details code{display:block;max-width:520px;white-space:normal;overflow-wrap:anyw
 <div class="table-wrap">
 <table data-monitor-table data-section-id="{{ section_id }}">
   <thead><tr>
-    <th>Last REGISTER (Zurich)</th><th>MSISDN</th><th>IMSI</th>
+    <th>Last REGISTER (Zurich)</th><th>Population</th><th>MSISDN</th><th>IMSI</th>
     <th data-sort-key="device" aria-sort="none"><button type="button"
         class="sort-button" data-sort-key="device">Device</button></th>
     <th data-sort-key="build" aria-sort="none"><button type="button"
@@ -1258,12 +1258,15 @@ details code{display:block;max-width:520px;white-space:normal;overflow-wrap:anyw
   <tbody>
   {% for row in rows %}
   <tr data-monitor-row
+      data-population="{{ row.population|e }}"
+      data-imsi="{{ row.imsi|e }}"
       data-device="{{ row.model|e }}"
       data-build="{{ row.build_number|e }}"
       data-os="{{ row.os_version|e }}"
       data-user-agent="{{ row.user_agent|e }}"
       data-original-index="{{ loop.index0 }}">
     <td class="mono">{{ row.timestamp_zurich }}</td>
+    <td>{{ row.population or "—" }}</td>
     <td class="mono">{{ row.msisdn or "—" }}</td>
     <td class="mono">{{ row.imsi }}</td>
     <td>{{ row.model or "—" }}</td>
@@ -1382,6 +1385,8 @@ function applyMonitorControls() {
     rows.forEach(function(row) {
       body.appendChild(row);
       const values = [
+        row.dataset.population,
+        row.dataset.imsi,
         row.dataset.device,
         row.dataset.build,
         row.dataset.os,

@@ -65,7 +65,12 @@ class MonitorTemplateTests(unittest.TestCase):
         self.assertEqual(len(filters), 1)
         self.assertEqual(
             filters[0].get("placeholder"),
-            "Filter device, build, OS or User-Agent",
+            "Filter population, IMSI, device, build, OS or User-Agent",
+        )
+        self.assertIn(
+            "<th>Last REGISTER (Zurich)</th><th>Population</th>"
+            "<th>MSISDN</th><th>IMSI</th>",
+            rendered,
         )
         self.assertIn("OS version", parsed.text)
         self.assertNotIn("Android version", parsed.text)
@@ -104,6 +109,8 @@ class MonitorTemplateTests(unittest.TestCase):
     def test_row_metadata_is_explicitly_escaped_for_control_attributes(self):
         template = monitor_template()
 
+        self.assertIn('data-population="{{ row.population|e }}"', template)
+        self.assertIn('data-imsi="{{ row.imsi|e }}"', template)
         self.assertIn('data-device="{{ row.model|e }}"', template)
         self.assertIn('data-build="{{ row.build_number|e }}"', template)
         self.assertIn('data-os="{{ row.os_version|e }}"', template)
@@ -136,6 +143,8 @@ class MonitorTemplateTests(unittest.TestCase):
         self.assertIn("catch", template)
         self.assertIn("originalIndex", template)
         self.assertIn('querySelectorAll("[data-monitor-table]")', template)
+        self.assertIn("row.dataset.population", template)
+        self.assertIn("row.dataset.imsi", template)
 
 
 if __name__ == "__main__":
